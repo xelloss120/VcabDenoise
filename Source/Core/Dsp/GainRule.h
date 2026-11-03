@@ -8,8 +8,8 @@
 //   3. ならす: 時間（アタック・リリース。dB で、開けるのは速く閉じるのは遅く）、またはケプストラム（Breithaupt ら 2007。
 //      入り切りできる。切ったときは時間）。どちらの後も、周波数を ERB（聴覚の帯域幅）の尺度でならす（高い周波数ほど広く）。
 //   4. 立ち上がり保護（入り切りできる）: 区画の大きさが、ノイズより 10dB 以上大きく、ゆっくりの大きさ（40ms）より
-//      3dB 以上急に大きくなったら、30ms の間その区画を開ける（開ける量は SNR +9〜+15dB でなだらかに、その後 20ms で戻す。
-//      VoiChanAlgoBox の帯域分割の「立ち上がりの保護」と同じ値）。
+//      3dB 以上急に大きくなったら、30ms の間その区画を 5ms で開ける（開ける量は SNR +9〜+15dB でなだらかに、その後 40ms で戻す。
+//      判定は VoiChanAlgoBox の帯域分割の「立ち上がりの保護」と同じ値）。
 // 係数（判定指向型の 0.98、Cohen の 0.7、ケプストラムの強さ）は、論文の分析の間隔での値を、今の間隔に換算して使う。
 // 計算は、残す割合の自然対数のまま進める（対数と指数の計算を、区画ごとに数回に減らすため）。結果は dB で返す。
 // 1〜3 は VoiChanAlgoBox の SpectralGain と GainSmoother から、使う部分だけを移したもの。
@@ -65,7 +65,7 @@ private:
     // 立ち上がり保護
     std::vector<float> slowPower, opened;
     std::vector<int> holdLeft;
-    float slowCoef = 0.1f, openRelease = 0.1f;
+    float slowCoef = 0.1f, openAttack = 0.1f, openRelease = 0.1f;
     int holdFrames = 10;
 };
 

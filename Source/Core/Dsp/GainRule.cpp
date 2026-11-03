@@ -86,7 +86,8 @@ void GainRule::prepare (int fftSize, double sampleRate, int hopSize)
     // 立ち上がり保護の時間（フレームの数に直す）
     const auto coef = [this] (double seconds) { return static_cast<float> (1.0 - std::exp (-hopSeconds / seconds)); };
     slowCoef = coef (0.040);
-    openRelease = coef (0.020);
+    openAttack = coef (0.005);
+    openRelease = coef (0.040);
     holdFrames = std::max (1, static_cast<int> (std::lround (0.030 / hopSeconds)));
     slowPower.assign (b, 0.0f);
     opened.assign (b, 0.0f);
@@ -273,7 +274,7 @@ void GainRule::protectOnset (const float* power, const float* noise)
         if (holdLeft[i] > 0)
         {
             --holdLeft[i];
-            opened[i] = 1.0f;
+            opened[i] += openAttack * (1.0f - opened[i]); // 一気に開けると粒（ピロピロ）のもとになるので、なめらかに開ける
         }
         else
         {

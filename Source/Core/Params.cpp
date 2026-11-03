@@ -19,11 +19,11 @@ std::vector<ParamSpec> makeSpecs()
         { P::noiseOnly,           "noise_only",          "抑制ノイズ試聴",             T::toggle,   0,       1,       0,       1,     0,      "",   {} },
 
         // 広い帯域の抑制
-        { P::maxReduction,        "max_reduction",       "抑制量上限",                 T::floating, 0,       30,      24,      0.5f,  0,      "dB", {} },
+        { P::maxReduction,        "max_reduction",       "抑制量上限",                 T::floating, 0,       30,      20,      0.5f,  0,      "dB", {} },
         { P::strength,            "strength",            "強度",                       T::floating, 0,       12,      6,       0.5f,  0,      "dB", {} },
         { P::attackMs,            "attack",              "アタック",                   T::floating, 0.5f,    50,      10,      0.1f,  5,      "ms", {} },
         { P::releaseMs,           "release",             "リリース",                   T::floating, 10,      1000,    100,     1,     150,    "ms", {} },
-        { P::presenceOn,          "presence_on",         "音声存在確率（OM-LSA）",     T::toggle,   0,       1,       0,       1,     0,      "",   {} },
+        { P::presenceOn,          "presence_on",         "音声存在確率（OM-LSA）",     T::toggle,   0,       1,       1,       1,     0,      "",   {} },
         { P::cepstrumOn,          "cepstrum_on",         "ケプストラム平滑化",         T::toggle,   0,       1,       0,       1,     0,      "",   {} },
         { P::onsetProtect,        "onset_protect",       "立ち上がり保護",             T::toggle,   0,       1,       1,       1,     0,      "",   {} },
 
