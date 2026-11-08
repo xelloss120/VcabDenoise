@@ -179,6 +179,7 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     }
     hasPendingCurve.store (false);
 
+    broadbandActive = true;
     phase = 0;
     bypassMix = noiseOnlyMix = 0;
     inPower = outPower = 0;
@@ -342,6 +343,23 @@ void Engine::onBroadbandFrame (Stage& st, const ParamValues& p, bool useLearned)
         updateNoiseCurve (useLearned);
 }
 
+void Engine::stopBroadband()
+{
+    for (auto* st : { &shortSide, &midSide })
+    {
+        st->analyzer.reset();
+        st->noise.reset(); // 自動追従の見積もりだけ消す（学習した値は残る）
+        st->rule.reset();
+        std::fill (st->gainDb.begin(), st->gainDb.end(), 0.0f);
+        if (! st->identity)
+            st->fir.setIdentity();
+        st->identity = true;
+    }
+    meters.noiseCurveValid.store (false);
+    if (monitorOn)
+        updateMonitor(); // 抑制ノイズ試聴を、狭帯域の分だけにする
+}
+
 void Engine::onTonalFrame (const ParamValues& p)
 {
     const auto s = tonalSettings (p);
@@ -432,6 +450,15 @@ void Engine::process (float* data, int n, const ParamValues& p)
         else
             monitorFir.setIdentity();
     }
+    // 抑制量上限 0dB（学習中を除く）では、広い帯域の側を止める
+    const bool broadbandOn = p.get (P::maxReduction) > 0.0 || shortSide.noise.learning();
+    if (broadbandOn != broadbandActive)
+    {
+        if (! broadbandOn)
+            stopBroadband();
+        broadbandActive = broadbandOn;
+    }
+
     const float bypassTarget = p.on (P::bypass) ? 1.0f : 0.0f;
     const float noiseOnlyTarget = p.on (P::noiseOnly) ? 1.0f : 0.0f;
 
@@ -465,12 +492,13 @@ void Engine::process (float* data, int n, const ParamValues& p)
             const float y3 = shortSide.fir.process (y2);
             const float removed = monitorFir.process (x);
 
-            for (auto* st : { &midSide, &shortSide })
-            {
-                st->noise.observe (y1);
-                if (st->analyzer.push (y1))
-                    onBroadbandFrame (*st, p, useLearned);
-            }
+            if (broadbandActive)
+                for (auto* st : { &midSide, &shortSide })
+                {
+                    st->noise.observe (y1);
+                    if (st->analyzer.push (y1))
+                        onBroadbandFrame (*st, p, useLearned);
+                }
 
             noiseOnlyMix += std::clamp (noiseOnlyTarget - noiseOnlyMix, -mixStep, mixStep);
             bypassMix += std::clamp (bypassTarget - bypassMix, -mixStep, mixStep);

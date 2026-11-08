@@ -32,7 +32,8 @@ void printUsage()
         "  --in <file.wav>        入力の WAV（2ch 以上なら 1ch 目を使う）\n"
         "  --out <file.wav>       出力の WAV\n"
         "  --set <key>=<値>       パラメータを指定（複数可）。choice と on/off は番号（0, 1, ...）\n"
-        "  --block <サンプル数>   処理する塊の大きさ（初期値 128）\n"
+        "  --set-at <秒> <key>=<値> その時刻（を含む塊の頭）からパラメータを変える（複数可）\n"
+        "  --block <サンプル数>  処理する塊の大きさ（初期値 128）\n"
         "  --learn <始め>:<終わり> この間（秒）、学習ボタンを押したことにする\n"
         "  --save-learned <file>  処理の後に、学習した値をファイルに書き出す（保存の確認用）\n"
         "  --load-learned <file>  処理の前に、学習した値をファイルから読み込む（保存の確認用）\n"
@@ -140,6 +141,13 @@ int main (int argc, char* argv[])
     double learnFrom = -1, learnTo = -1;
     bool printNoiseCurve = false, printNotches = false, realtime = false;
     vcab::ParamValues params;
+    struct Change
+    {
+        double at;
+        int index;
+        float value;
+    };
+    std::vector<Change> changes; // --set-at（途中で変えるパラメータ）
 
     for (int i = 1; i < argc; ++i)
     {
@@ -162,6 +170,18 @@ int main (int argc, char* argv[])
         else if (a == "--realtime") realtime = true;
         else if (a == "--list") { printParams(); return 0; }
         else if (a == "--selftest") return selfTest();
+        else if (a == "--set-at")
+        {
+            const double at = next().getDoubleValue();
+            const auto kv = next();
+            const int index = vcab::findParamByKey (kv.upToFirstOccurrenceOf ("=", false, false).toStdString());
+            if (index < 0)
+            {
+                std::cerr << "知らないパラメータ: " << kv << "（--list で一覧）\n";
+                return 1;
+            }
+            changes.push_back ({ at, index, kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue() });
+        }
         else if (a == "--set")
         {
             const auto kv = next();
@@ -220,6 +240,12 @@ int main (int argc, char* argv[])
             engine.requestLearning (true);
         if (learnStop >= 0 && pos <= learnStop && learnStop < pos + n)
             engine.requestLearning (false);
+        for (const auto& c : changes)
+        {
+            const int at = static_cast<int> (c.at * sr);
+            if (pos <= at && at < pos + n)
+                params.v[static_cast<size_t> (c.index)] = c.value;
+        }
         engine.process (data.data() + pos, n, params);
         if (realtime)
             std::this_thread::sleep_for (std::chrono::microseconds (static_cast<int> (n * 1.0e6 / sr)));

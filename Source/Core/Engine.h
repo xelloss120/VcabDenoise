@@ -14,6 +14,10 @@
 // - 抑制ノイズ試聴: 3 段を合わせた残す割合 G から、削った分の大きさ √(1 − G²) を特性にした FIR を作り、入力にかける
 //   （入力 − 出力 にすると、最小位相の FIR の位相のずれの分が、削っていない声として聞こえてしまうため）。
 // - バイパスと抑制ノイズ試聴の切り替えは、10ms でなめらかに移る。中の分析は、バイパスの間も続ける。
+// - 抑制量上限が 0dB で学習中でないときは、狭帯域抑制だけを使うとみなし、中くらいの側と短い側の分析・ノイズ推定・
+//   下げる量の計算を止めて、2 つの FIR を素通しにする（軽くするため）。声の判定は狭帯域抑制が使うので続ける。
+//   止めるときに自動追従の見積もりを消し、0dB から戻したときは起動直後と同じ状態から始める（古い見積もりで抑制しないように。
+//   学習した値は残す）。止めている間は、モニターのノイズ推定の線を出さない。
 #pragma once
 
 #include "Params.h"
@@ -90,6 +94,7 @@ private:
     };
 
     void prepareStage (Stage& st, int size, bool lowSide);
+    void stopBroadband();
     void onBroadbandFrame (Stage& st, const ParamValues& p, bool useLearned);
     void onTonalFrame (const ParamValues& p);
     void updateMonitor();
@@ -103,6 +108,7 @@ private:
     double sr = 48000;
     int scale = 1, blockSize = 128, phase = 0;
     Stage shortSide, midSide;
+    bool broadbandActive = true; // 広い帯域の分析を動かしているか（抑制量上限 0dB で、学習中でないときは止める）
 
     // 狭帯域ノイズ
     FrameAnalyzer tonalAnalyzer;

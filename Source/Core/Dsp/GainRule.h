@@ -38,9 +38,9 @@ public:
     void prepare (int fftSize, double sampleRate, int hopSize);
     // power と noise（区画ごとの 2 乗）から、gainDb（残す割合の dB。−抑制量上限〜0）を出す
     void compute (const float* power, const float* noise, const GainSettings& s, float* gainDb);
+    void reset(); // ならしなどの、前のフレームから引き継ぐ状態を消す
 
 private:
-    void reset();
     // lg: 残す割合の自然対数（区画ごと）
     void logMmse (const float* power, const float* noise, const GainSettings& s);
     void applyPresence (double lnFloor);
