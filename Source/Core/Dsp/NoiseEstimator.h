@@ -62,9 +62,8 @@ public:
     std::vector<float>& learnedValues() noexcept { return learned; }
     void setLearned (bool valid) noexcept { learnedValid = valid; }
 
-    // 最小値を本来の大きさに戻す倍率を、白色雑音で測る（beginCalibration → calibrationFrame × 数 → finishCalibration）
+    // 最小値を本来の大きさに戻す倍率を、白色雑音で測る（beginCalibration → 白色雑音の分析を push → finishCalibration）
     void beginCalibration();
-    void calibrationFrame (const float* power);
     void finishCalibration();
 
 private:
@@ -78,9 +77,10 @@ private:
     static constexpr float kTiny = 1.0e-20f;
 
     void trackMinimum (const float* power);
+    void calibrationFrame (const float* power); // 測っている間の push（大きさをためるだけ）
 
     int channels = 0;
-    double frameRateHz = 100, sampleRateHz = 48000;
+    double frameRateHz = 100;
     int quietLength = 96, settleLength = 0, quietRun = 0, validRun = 0;
 
     // 最小値

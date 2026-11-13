@@ -168,6 +168,30 @@ void MonitorView::paint (juce::Graphics& g)
     const auto p = processor.currentParams();
     auto& m = processor.meters();
 
+    // 抑制量（薄い赤の塗り）: グラフの上の端（0dB）から、下げている量だけ下へ垂らす。目盛りはスペクトルと同じ（入力と出力の差と比べられる）。
+    // バイパスのときは抑制していないので出さない
+    const bool showGain = ! p.on (vcab::P::bypass);
+    if (showGain)
+    {
+        juce::Path fill;
+        fill.startNewSubPath (xForHz (vcab::EngineMeters::noiseCurveHz (0), area), area.getY());
+        juce::Path line;
+        for (int i = 0; i < vcab::EngineMeters::kNoiseCurvePoints; ++i)
+        {
+            const float x = xForHz (vcab::EngineMeters::noiseCurveHz (i), area);
+            const float y = yForDb (maxDb + std::max (m.gainCurveDb[static_cast<size_t> (i)].load(), minDb - maxDb), area);
+            fill.lineTo (x, y);
+            if (i == 0) line.startNewSubPath (x, y);
+            else line.lineTo (x, y);
+        }
+        fill.lineTo (area.getRight(), area.getY());
+        fill.closeSubPath();
+        g.setColour (kGainColour.withAlpha (0.16f));
+        g.fillPath (fill);
+        g.setColour (kGainColour.withAlpha (0.75f));
+        g.strokePath (line, juce::PathStrokeType (1.5f));
+    }
+
     // ノイズ推定（緑の点線）。見積もりは「白色雑音に直したときの 1 サンプルあたりの 2 乗」なので、
     // この表示（ハン窓の fftSize 点、大きさ × 4 / fftSize）に直す: 白色雑音の分散 σ² は 10log10(σ² × 6 / fftSize) dB になる。
     // 表示のスペクトルは dB でならしているので、ノイズは 2 乗の平均より約 2.5dB 低く見える。その分も引く（VoiChanAlgoBox と同じ）
@@ -234,6 +258,11 @@ void MonitorView::paint (juce::Graphics& g)
     g.drawText (utf8 ("出力"), juce::Rectangle<float> (cx + 4, area.getY() + 3, 54, 20), juce::Justification::left);
     g.setColour (kNotchColour);
     g.drawText (utf8 ("▼ 狭帯域"), juce::Rectangle<float> (area.getX() + 8, area.getY() + 3, 80, 20), juce::Justification::left);
+    if (showGain)
+    {
+        g.setColour (kGainColour);
+        g.drawText (utf8 ("抑制量"), juce::Rectangle<float> (area.getRight() - 200, area.getY() + 3, 64, 20), juce::Justification::right);
+    }
     g.setColour (kVoiceColour);
     g.drawText (utf8 ("声あり判定"), juce::Rectangle<float> (area.getRight() - 128, area.getY() + 3, 120, 20), juce::Justification::right);
 

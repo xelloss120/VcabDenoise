@@ -1,5 +1,5 @@
 # デノイズの評価: 声 + ノイズを通して、ノイズの下がり方と声の削れ方を測る（VoiChanAlgoBox の denoise_eval.py と同じ測り方）
-#   python denoise_eval.py max_reduction=18 presence_on=0 ...   （設定を並べる。なければ初期値）
+#   python denoise_eval.py max_reduction=18 strength=3 ...   （設定を並べる。なければ初期値）
 #   --kind pink|white|fan|tones でノイズの種類、--level <dB> でノイズの大きさ（初期値 -50）
 import os
 import sys

@@ -8,7 +8,7 @@ namespace
 {
 
 // 画面の大きさ（一般的な VST プラグインに合わせる。RX Voice De-noise を主な目安に、ユーザーと調整する）
-constexpr int kWindowWidth = 800, kWindowHeight = 540; // 高さは、詳細の狭帯域ノイズの枠（14 行）が収まるように
+constexpr int kWindowWidth = 800, kWindowHeight = 600; // 4:3。スペクトル・抑制量・ノイズ推定の線を重ねても見やすい大きさ
 constexpr int kHeader = 40;
 constexpr int kStripRow = 30;
 constexpr int kPanelRow = 27; // 詳細の枠の 1 行
@@ -26,10 +26,9 @@ void withStep (juce::Slider& slider, vcab::P id)
 
 using vcab::P;
 
-const std::vector<vcab::P> kReductionDetails { P::strength, P::attackMs, P::releaseMs, P::onsetProtect, P::cepstrumOn, P::presenceOn };
-const std::vector<vcab::P> kNoiseDetails { P::rnnThreshold, P::saveLearned, P::showNoiseEstimate };
-const std::vector<vcab::P> kTonalDetails { P::tonalSensitivity, P::tonalCount, P::tonalMaxDepth, P::tonalLowHz, P::tonalHighHz, P::tonalNeighborHz,
-                                           P::tonalActivateSec, P::tonalReleaseSec, P::tonalJumpSec, P::tonalJumpRange, P::tonalWidth, P::tonalLowWidth, P::tonalQuietDb };
+const std::vector<vcab::P> kReductionDetails { P::strength, P::attackMs, P::releaseMs, P::onsetProtect };
+const std::vector<vcab::P> kNoiseDetails { P::rnnThreshold, P::showNoiseEstimate };
+const std::vector<vcab::P> kTonalDetails { P::tonalSensitivity, P::tonalCount, P::tonalMaxDepth, P::tonalActivateSec };
 
 // 学習ボタンの説明（後ろに今の状態を足して出す）
 constexpr const char* kLearnTip = "押してから、もう一度押すまでのノイズを覚えます。その間は静かにしていて下さい（押してから約 1 秒は覚えずに待ちます）。"
@@ -365,7 +364,7 @@ void VcabDenoiseEditor::drawMeters (juce::Graphics& g)
     };
     bar ("入", m.inputDb.load(), -80.0f, 0.0f, kInputColour);
     bar ("出", m.outputDb.load(), -80.0f, 0.0f, kOutputColour);
-    bar ("抑", m.reductionDb.load(), 0.0f, 30.0f, kNoiseColour);
+    bar ("抑", m.reductionDb.load(), 0.0f, 30.0f, kGainColour);
 }
 
 void VcabDenoiseEditor::updateEnabled()

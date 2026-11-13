@@ -26,15 +26,20 @@ struct WhiteNoise
     }
 };
 
-// 区画の値（dB）を、区画の間の位置 pos で直線補間する
-double interpDb (const std::vector<float>& db, double pos)
+// 区画ごとの値（count 個）を、区画の間の位置 pos で直線補間する（範囲の外は端の値）
+double interpolate (const float* values, int count, double pos)
 {
-    const int last = static_cast<int> (db.size()) - 1;
+    const int last = count - 1;
     pos = std::clamp (pos, 0.0, static_cast<double> (last));
     const int i = std::min (static_cast<int> (pos), last - 1);
     const double t = pos - i;
-    const double a = db[static_cast<size_t> (i)], b = db[static_cast<size_t> (i + 1)];
+    const double a = values[i], b = values[i + 1];
     return a + (b - a) * t;
+}
+
+double interpDb (const std::vector<float>& db, double pos)
+{
+    return interpolate (db.data(), static_cast<int> (db.size()), pos);
 }
 
 GainSettings gainSettings (const ParamValues& p)
@@ -44,8 +49,6 @@ GainSettings gainSettings (const ParamValues& p)
     s.strengthDb = p.get (P::strength);
     s.attackMs = p.get (P::attackMs);
     s.releaseMs = p.get (P::releaseMs);
-    s.presence = p.on (P::presenceOn);
-    s.cepstrum = p.on (P::cepstrumOn);
     s.onsetProtect = p.on (P::onsetProtect);
     return s;
 }
@@ -56,16 +59,7 @@ TonalSettings tonalSettings (const ParamValues& p)
     s.sensitivityDb = p.get (P::tonalSensitivity);
     s.count = p.index (P::tonalCount);
     s.maxDepthDb = p.get (P::tonalMaxDepth);
-    s.lowHz = p.get (P::tonalLowHz);
-    s.highHz = p.get (P::tonalHighHz);
-    s.neighborHz = p.get (P::tonalNeighborHz);
     s.activateSec = p.get (P::tonalActivateSec);
-    s.releaseSec = p.get (P::tonalReleaseSec);
-    s.jumpSec = p.get (P::tonalJumpSec);
-    s.jumpRange = p.get (P::tonalJumpRange) * 0.01;
-    s.width2k = p.get (P::tonalWidth);
-    s.lowWidth = p.get (P::tonalLowWidth);
-    s.quietDb = p.get (P::tonalQuietDb);
     return s;
 }
 } // namespace
@@ -87,24 +81,54 @@ double Engine::crossoverLow (double hz)
     return 0.5 + 0.5 * std::cos (kPi * t);
 }
 
+void Engine::FirPath::prepare (int taps, int block, int fade, int shadowCount)
+{
+    designer.prepare (2 * taps);
+    fir.prepare (taps, block, fade);
+    shadow.clear();
+    for (int i = 0; i < shadowCount; ++i)
+    {
+        shadow.push_back (std::make_unique<FadingFir>());
+        shadow.back()->prepare (taps, block, fade);
+    }
+    h.assign (static_cast<size_t> (taps), 0.0f);
+    logMag.assign (static_cast<size_t> (taps + 1), 0.0);
+    identity = true;
+}
+
+void Engine::FirPath::design()
+{
+    designer.design (logMag.data(), h.data(), static_cast<int> (h.size()));
+    fir.setFilter (h.data());
+    for (auto& f : shadow)
+        f->setFilter (h.data());
+    identity = false;
+}
+
+void Engine::FirPath::bypass()
+{
+    if (identity)
+        return;
+    fir.setIdentity();
+    for (auto& f : shadow)
+        f->setIdentity();
+    identity = true;
+}
+
 void Engine::prepareStage (Stage& st, int size, bool lowSide)
 {
     const int hop = size / 4;
     st.analyzer.prepare (size, hop, FrameAnalyzer::Window::recentHeavy);
     st.noise.prepare (size / 2 + 1, sr / hop, sr, size);
     st.rule.prepare (size, sr, hop);
-    st.designer.prepare (2 * size);
-    st.fir.prepare (size, blockSize, hop);
+    st.path.prepare (size, blockSize, hop, shadowCount);
     st.gainDb.assign (static_cast<size_t> (size / 2 + 1), 0.0f);
-    st.h.assign (static_cast<size_t> (size), 0.0f);
-    st.logMag.assign (static_cast<size_t> (size + 1), 0.0);
     st.weight.assign (static_cast<size_t> (size + 1), 0.0);
     for (int k = 0; k <= size; ++k)
     {
         const double hz = k * sr / (2.0 * size);
         st.weight[static_cast<size_t> (k)] = lowSide ? crossoverLow (hz) : 1.0 - crossoverLow (hz);
     }
-    st.identity = true;
 }
 
 void Engine::prepare (double sampleRate, int maxBlockSize)
@@ -119,14 +143,11 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     const int tonalSize = 4096 * scale;
     tonalAnalyzer.prepare (tonalSize, tonalSize / 4, FrameAnalyzer::Window::hann);
     tonal.prepare (sr, tonalSize, (tonalSize / 4) / sr);
-    tonalDesigner.prepare (2 * tonalSize);
-    tonalFir.prepare (tonalSize, blockSize, tonalSize / 4);
-    tonalH.assign (static_cast<size_t> (tonalSize), 0.0f);
-    tonalLogMag.assign (static_cast<size_t> (tonalSize + 1), 0.0);
+    tonalPath.prepare (tonalSize, blockSize, tonalSize / 4, shadowCount);
+    shadowChunk.assign (static_cast<size_t> (shadowCount), std::vector<float> (static_cast<size_t> (blockSize), 0.0f));
     tonalFreqs.assign (static_cast<size_t> (tonalSize + 1), 0.0);
     for (int k = 0; k <= tonalSize; ++k)
         tonalFreqs[static_cast<size_t> (k)] = k * sr / (2.0 * tonalSize);
-    tonalIdentity = true;
     notchCount = 0;
 
     // 分析（と FIR の作り直し）の時期を段ごとにずらす。短い側は毎塊、中くらいの側は 4 塊ごと、長い側は 8 塊ごとなので、
@@ -135,10 +156,7 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     midSide.analyzer.setFirstHopEarlier (2 * blockSize);
     tonalAnalyzer.setFirstHopEarlier (4 * blockSize);
 
-    monitorDesigner.prepare (2 * tonalSize);
-    monitorFir.prepare (tonalSize, blockSize, tonalSize / 4);
-    monitorH.assign (static_cast<size_t> (tonalSize), 0.0f);
-    monitorLogMag.assign (static_cast<size_t> (tonalSize + 1), 0.0);
+    monitorPath.prepare (tonalSize, blockSize, tonalSize / 4, 0);
     monitorOn = false;
 
     vad.prepare (sr, std::max (maxBlockSize, blockSize));
@@ -314,33 +332,30 @@ double Engine::totalGainDb (double hz) const
 void Engine::onBroadbandFrame (Stage& st, const ParamValues& p, bool useLearned)
 {
     st.noise.push (st.analyzer.powers(), quietNow);
-    st.rule.compute (st.analyzer.powers(), st.noise.estimate (useLearned), gainSettings (p), st.gainDb.data());
+    auto gs = gainSettings (p);
+    gs.bands = &st == &shortSide; // 帯域でまとめるのは短い側だけ（低い帯域は、声の基音とファンの音を分ける細かさが要る）
+    st.rule.compute (st.analyzer.powers(), st.noise.estimate (useLearned), gs, st.gainDb.data());
 
     // 設計の区画は、分析の区画の 2 倍の細かさ（区画の間は dB で直線補間）。受け持たない帯域は 0dB（素通し）
-    const int designBins = static_cast<int> (st.logMag.size());
+    auto& logMag = st.path.logMag;
     double largest = 0;
-    for (int k = 0; k < designBins; ++k)
+    for (size_t k = 0; k < logMag.size(); ++k)
     {
-        const double w = st.weight[static_cast<size_t> (k)];
-        const double db = w > 0 ? w * interpDb (st.gainDb, k * 0.5) : 0.0;
-        st.logMag[static_cast<size_t> (k)] = db * kDbToLn;
+        const double w = st.weight[k];
+        const double db = w > 0 ? w * interpDb (st.gainDb, static_cast<double> (k) * 0.5) : 0.0;
+        logMag[k] = db * kDbToLn;
         largest = std::max (largest, -db);
     }
     if (largest < 0.01)
-    {
-        if (! st.identity)
-            st.fir.setIdentity();
-        st.identity = true;
-    }
+        st.path.bypass();
     else
-    {
-        st.designer.design (st.logMag.data(), st.h.data(), static_cast<int> (st.h.size()));
-        st.fir.setFilter (st.h.data());
-        st.identity = false;
-    }
+        st.path.design();
 
     if (&st == &midSide)
+    {
         updateNoiseCurve (useLearned);
+        updateGainCurve();
+    }
 }
 
 void Engine::stopBroadband()
@@ -351,13 +366,12 @@ void Engine::stopBroadband()
         st->noise.reset(); // 自動追従の見積もりだけ消す（学習した値は残る）
         st->rule.reset();
         std::fill (st->gainDb.begin(), st->gainDb.end(), 0.0f);
-        if (! st->identity)
-            st->fir.setIdentity();
-        st->identity = true;
+        st->path.bypass();
     }
     meters.noiseCurveValid.store (false);
     if (monitorOn)
         updateMonitor(); // 抑制ノイズ試聴を、狭帯域の分だけにする
+    updateGainCurve();
 }
 
 void Engine::onTonalFrame (const ParamValues& p)
@@ -385,58 +399,64 @@ void Engine::onTonalFrame (const ParamValues& p)
 
     if (notchCount == 0)
     {
-        if (! tonalIdentity)
-            tonalFir.setIdentity();
-        tonalIdentity = true;
+        tonalPath.bypass();
     }
     else
     {
-        std::vector<double>& db = tonalLogMag;
+        auto& db = tonalPath.logMag;
         std::fill (db.begin(), db.end(), 0.0);
         TonalTracker::addShape (notchList.data(), notchCount, tonalFreqs.data(), static_cast<int> (tonalFreqs.size()), db.data());
         for (auto& v : db)
             v *= kDbToLn;
-        tonalDesigner.design (db.data(), tonalH.data(), static_cast<int> (tonalH.size()));
-        tonalFir.setFilter (tonalH.data());
-        tonalIdentity = false;
+        tonalPath.design();
     }
 
     if (monitorOn)
         updateMonitor();
+    updateGainCurve();
+}
+
+void Engine::updateGainCurve()
+{
+    // 画面の抑制量の線（中くらいの側の区切りと狭帯域の区切りごと。160 点なので軽い）
+    for (int i = 0; i < EngineMeters::kNoiseCurvePoints; ++i)
+        meters.gainCurveDb[static_cast<size_t> (i)].store (static_cast<float> (totalGainDb (EngineMeters::noiseCurveHz (i))));
 }
 
 void Engine::updateMonitor()
 {
     // 削った分の大きさ √(1 − G²)（G は 3 段を合わせた残す割合）
-    for (size_t k = 0; k < monitorLogMag.size(); ++k)
+    auto& logMag = monitorPath.logMag;
+    for (size_t k = 0; k < logMag.size(); ++k)
     {
         const double g = std::pow (10.0, totalGainDb (tonalFreqs[k]) / 20.0);
-        monitorLogMag[k] = 0.5 * std::log (std::max (1.0 - g * g, 1.0e-6));
+        logMag[k] = 0.5 * std::log (std::max (1.0 - g * g, 1.0e-6));
     }
-    monitorDesigner.design (monitorLogMag.data(), monitorH.data(), static_cast<int> (monitorH.size()));
-    monitorFir.setFilter (monitorH.data());
+    monitorPath.design();
 }
 
 void Engine::updateNoiseCurve (bool useLearned)
 {
-    // 500Hz より下は中くらいの側、上は短い側の見積もり
+    // 2 つの段の受け持ちが半々になる所（約 500Hz）より下は中くらいの側、上は短い側の見積もり
     for (int i = 0; i < EngineMeters::kNoiseCurvePoints; ++i)
     {
         const double hz = EngineMeters::noiseCurveHz (i);
-        const Stage& st = hz < 500.0 ? midSide : shortSide;
-        const double binHz = sr / st.analyzer.fftSize();
-        const float* est = st.noise.estimate (useLearned);
-        const double pos = std::clamp (hz / binHz, 0.0, static_cast<double> (st.analyzer.bins() - 1));
-        const int k = std::min (static_cast<int> (pos), st.analyzer.bins() - 2);
-        const double t = pos - k;
-        const double v = est[k] + (est[k + 1] - est[k]) * t;
+        const Stage& st = crossoverLow (hz) >= 0.5 ? midSide : shortSide;
+        const double v = interpolate (st.noise.estimate (useLearned), st.analyzer.bins(), hz / (sr / st.analyzer.fftSize()));
         meters.noiseCurveDb[static_cast<size_t> (i)].store (static_cast<float> (10.0 * std::log10 (v * st.analyzer.toDensity() + 1.0e-30)));
     }
     meters.noiseCurveValid.store (true);
 }
 
-void Engine::process (float* data, int n, const ParamValues& p)
+void Engine::setShadowCount (int count)
 {
+    shadowCount = std::max (0, count);
+}
+
+void Engine::process (float* data, int n, const ParamValues& p, float* const* shadow)
+{
+    if (shadow == nullptr || shadowCount == 0)
+        shadow = nullptr;
     handleRequests();
     vad.setThreshold (p.get (P::rnnThreshold) * 0.01f);
     const bool useLearned = static_cast<NoiseMode> (p.index (P::noiseMode)) == NoiseMode::learned;
@@ -448,7 +468,7 @@ void Engine::process (float* data, int n, const ParamValues& p)
         if (monitorOn)
             updateMonitor();
         else
-            monitorFir.setIdentity();
+            monitorPath.bypass();
     }
     // 抑制量上限 0dB（学習中を除く）では、広い帯域の側を止める
     const bool broadbandOn = p.get (P::maxReduction) > 0.0 || shortSide.noise.learning();
@@ -473,7 +493,10 @@ void Engine::process (float* data, int n, const ParamValues& p)
         {
             const float x = data[done + i];
             chunkIn[static_cast<size_t> (i)] = x;
-            chunkTonal[static_cast<size_t> (i)] = tonalFir.process (x);
+            chunkTonal[static_cast<size_t> (i)] = tonalPath.fir.process (x);
+            if (shadow != nullptr)
+                for (int c = 0; c < shadowCount; ++c)
+                    shadowChunk[static_cast<size_t> (c)][static_cast<size_t> (i)] = tonalPath.shadow[static_cast<size_t> (c)]->process (shadow[c][done + i]);
             if (tonalAnalyzer.push (x))
                 onTonalFrame (p);
         }
@@ -488,9 +511,15 @@ void Engine::process (float* data, int n, const ParamValues& p)
         {
             const float x = chunkIn[static_cast<size_t> (i)];
             const float y1 = chunkTonal[static_cast<size_t> (i)];
-            const float y2 = midSide.fir.process (y1);
-            const float y3 = shortSide.fir.process (y2);
-            const float removed = monitorFir.process (x);
+            const float y2 = midSide.path.fir.process (y1);
+            const float y3 = shortSide.path.fir.process (y2);
+            const float removed = monitorPath.fir.process (x);
+            if (shadow != nullptr)
+                for (int c = 0; c < shadowCount; ++c)
+                {
+                    const auto ci = static_cast<size_t> (c);
+                    shadow[c][done + i] = shortSide.path.shadow[ci]->process (midSide.path.shadow[ci]->process (shadowChunk[ci][static_cast<size_t> (i)]));
+                }
 
             if (broadbandActive)
                 for (auto* st : { &midSide, &shortSide })

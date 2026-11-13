@@ -10,7 +10,6 @@
 namespace vcab
 {
 
-
 namespace
 {
 double besselI0 (double x)
@@ -24,7 +23,6 @@ double besselI0 (double x)
     return sum;
 }
 } // namespace
-
 
 void StreamResampler::prepare (double inRate, double outRate)
 {
@@ -53,7 +51,6 @@ void StreamResampler::prepare (double inRate, double outRate)
     reset();
 }
 
-
 void StreamResampler::reset()
 {
     // 始めに half 個の 0（入力の -half〜-1 番目）を置く
@@ -62,7 +59,6 @@ void StreamResampler::reset()
     base = -half;
     t = 0;
 }
-
 
 void StreamResampler::process (const float* in, int n, std::vector<float>& out)
 {
@@ -109,7 +105,6 @@ void StreamResampler::process (const float* in, int n, std::vector<float>& out)
     }
 }
 
-
 namespace
 {
 constexpr int kAiFrame = 480; // 1 回分（48kHz で 10ms）
@@ -124,7 +119,6 @@ VoiceDetector::~VoiceDetector()
     if (state != nullptr)
         rnnoise_destroy (static_cast<DenoiseState*> (state));
 }
-
 
 void VoiceDetector::prepare (double sampleRate, int maxBlockSize)
 {
@@ -156,7 +150,6 @@ void VoiceDetector::prepare (double sampleRate, int maxBlockSize)
     worker = std::thread ([this] { workerLoop(); });
 }
 
-
 void VoiceDetector::reset()
 {
     // 判定する側に、今の位置から始め直すように伝える（RNNoise の状態も消す）
@@ -171,7 +164,6 @@ void VoiceDetector::reset()
     }
     wake.notify_one();
 }
-
 
 bool VoiceDetector::processFrames()
 {
@@ -210,7 +202,6 @@ bool VoiceDetector::processFrames()
     return did;
 }
 
-
 void VoiceDetector::workerLoop()
 {
     while (! stopWorker.load())
@@ -230,7 +221,6 @@ void VoiceDetector::workerLoop()
     }
 }
 
-
 int VoiceDetector::quietSamples() const noexcept
 {
     if (seenEpoch.load (std::memory_order_acquire) != epoch.load (std::memory_order_acquire))
@@ -244,7 +234,6 @@ int VoiceDetector::quietSamples() const noexcept
     const auto quiet = j - v - backlog;
     return quiet > 0 ? static_cast<int> (std::min (static_cast<double> (quiet) * ratio, 1.0e9)) : 0;
 }
-
 
 void VoiceDetector::process (const float* data, int n)
 {

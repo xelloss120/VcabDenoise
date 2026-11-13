@@ -181,16 +181,13 @@ void VcabDenoiseProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     if (auto xml = apvts.copyState().createXml())
     {
-        // 学習した値（「学習ノイズ保存」がオンのとき）。周波数の曲線なので、サンプルレートが変わっても使える
+        // 学習した値（常に保存する。消したいときは「学習ノイズ削除」）。周波数の曲線なので、サンプルレートが変わっても使える
         xml->removeAttribute ("learnedNoise");
-        if (currentParams().on (vcab::P::saveLearned))
+        const auto learned = engine.exportLearned();
+        if (! learned.empty())
         {
-            const auto learned = engine.exportLearned();
-            if (! learned.empty())
-            {
-                juce::MemoryBlock block (learned.data(), learned.size() * sizeof (float));
-                xml->setAttribute ("learnedNoise", block.toBase64Encoding());
-            }
+            juce::MemoryBlock block (learned.data(), learned.size() * sizeof (float));
+            xml->setAttribute ("learnedNoise", block.toBase64Encoding());
         }
         copyXmlToBinary (*xml, destData);
     }

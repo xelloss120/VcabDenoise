@@ -9,10 +9,23 @@ namespace vcab
 namespace
 {
 constexpr int kFloorGap = 3;              // 山のすぐ隣は周りの平均に含めない（山の裾で平均が上がらないように）
+constexpr double kHitRateSec = 0.5;       // 見えている割合を平均する時間
+constexpr double kMinHitRate = 0.7;       // 削り始めるのに要る、見えている割合
 constexpr double kForgetSeconds = 0.3;    // 削る前の山は、これだけ見えなければ忘れる
 constexpr double kAttackSeconds = 0.2;    // 削り始めるときに、これだけかけて深くする
 constexpr double kVoiceLowHz = 80;        // これより低い谷は太くする（声がないため）
 constexpr double kMainsMaxHz = 2000;      // 電源の倍数とみなす上限（これより上は、倍数の間が狭くなりすぎる）
+// 固定の値（2026-11-13 までは調整項目だった）
+constexpr double kLowHz = 20, kHighHz = 16000; // 探す範囲
+constexpr double kNeighborHz = 190;            // 周りの平均をとる範囲（前後）
+constexpr double kReleaseSec = 2;              // 消えてから、これだけかけて外す
+constexpr double kJumpSec = 0.5;               // 削っている山が消えて、これだけのうちに近くに新しい山が出たら、飛んだとみなす
+constexpr double kJumpRange = 0.3;             // 「近く」とみなす範囲（消えた山の周波数に対する割合）
+constexpr double kWidth2k = 70;                // 谷の幅（半値幅。2kHz のとき。周波数に比例）
+constexpr double kLowWidth = 20;               // kVoiceLowHz より低い谷の幅
+constexpr double kQuietDb = -96;               // これより小さい山は追いかけない（正弦波の振幅の dBFS）
+// 声の倍音の列とみなすずれ（基音に対する割合）
+constexpr double kHarmonicTolerance = 0.08;
 
 // 電源の 50 / 60Hz のちょうど倍数か（ずれは 1.5Hz か 0.4% の広いほう。電源の周波数の揺れと、山の周波数の誤差の分）
 bool isMainsHarmonic (double freq)
@@ -27,6 +40,14 @@ bool isMainsHarmonic (double freq)
             return true;
     }
     return false;
+}
+
+// freq が、基音 f0 の倍音（1 倍以上）に近いか
+bool nearHarmonic (double freq, double f0)
+{
+    const double ratio = freq / f0;
+    const double nearest = std::round (ratio);
+    return nearest >= 1 && std::abs (ratio - nearest) < kHarmonicTolerance;
 }
 } // namespace
 
@@ -48,12 +69,12 @@ void TonalTracker::reset()
         t = {};
 }
 
-double TonalTracker::widthFor (double freq, const TonalSettings& s) const
+double TonalTracker::widthFor (double freq) const
 {
     if (freq < kVoiceLowHz)
-        return s.lowWidth;
+        return kLowWidth;
     // 2kHz での幅に比例。FIR（4096）で作れる細かさ（約 2 区画）より細くはしない
-    return std::max (s.width2k * freq / 2000.0, 2.0 * binHz);
+    return std::max (kWidth2k * freq / 2000.0, 2.0 * binHz);
 }
 
 void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced, const TonalSettings& s)
@@ -66,7 +87,7 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
     for (int k = 0; k <= half; ++k)
         prefix[static_cast<size_t> (k + 1)] = prefix[static_cast<size_t> (k)] + magDb[static_cast<size_t> (k)];
 
-    const int floorHalf = std::max (kFloorGap + 2, static_cast<int> (std::lround (s.neighborHz / binHz)));
+    const int floorHalf = std::max (kFloorGap + 2, static_cast<int> (std::lround (kNeighborHz / binHz)));
     auto floorAt = [&] (int k)
     {
         const int a0 = std::max (0, k - floorHalf), a1 = std::max (0, k - kFloorGap);
@@ -79,12 +100,12 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
 
     // ---- 1. 突き出た山を探す ----
     candidates.clear();
-    const int kLow = std::max (3, static_cast<int> (s.lowHz / binHz));
-    const int kHigh = std::min (half - 3, static_cast<int> (std::min (s.highHz, sr * 0.45) / binHz));
+    const int kLow = std::max (3, static_cast<int> (kLowHz / binHz));
+    const int kHigh = std::min (half - 3, static_cast<int> (std::min (kHighHz, sr * 0.45) / binHz));
     for (int k = kLow; k <= kHigh; ++k)
     {
         const double v = magDb[static_cast<size_t> (k)];
-        if (v < s.quietDb)
+        if (v < kQuietDb)
             continue; // 聞こえないほど小さい山は追いかけない
         bool isMax = true;
         for (int d = 1; d <= 2 && isMax; ++d)
@@ -121,9 +142,7 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
             {
                 if (o.freq > 5000)
                     break;
-                const double ratio = o.freq / f0;
-                const double nearest = std::round (ratio);
-                if (nearest >= 1 && std::abs (ratio - nearest) < 0.08) // 基音の 8% 以内のずれ
+                if (nearHarmonic (o.freq, f0))
                 {
                     ++count;
                     if (! o.mains)
@@ -140,12 +159,8 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
     const bool harmonicVoice = bestCount >= 4;
     if (harmonicVoice)
         for (auto& c : candidates)
-        {
-            const double ratio = c.freq / bestF0;
-            const double nearest = std::round (ratio);
-            if (c.freq <= 5000 && nearest >= 1 && std::abs (ratio - nearest) < 0.08)
+            if (c.freq <= 5000 && nearHarmonic (c.freq, bestF0))
                 c.harmonic = true;
-        }
 
     updateTracks (voiced || harmonicVoice, s);
 }
@@ -162,8 +177,8 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
         for (int i = 0; i < static_cast<int> (tracks.size()); ++i)
         {
             const auto& t = tracks[static_cast<size_t> (i)];
-            if (! t.used)
-                continue;
+            if (! t.used || (t.left && voiced))
+                continue; // 飛んだ元の山は、声がある間は追いかけない（声の倍音に引っかかって残り続けないように）
             const double dist = std::abs (c.freq - t.freq);
             if (dist < std::max (1.5 * binHz, 0.015 * t.freq) && dist < bestDist)
             {
@@ -177,18 +192,23 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
             // 声の倍音と重なった候補でも、もう削っている山なら追いかけ続ける
             if (c.harmonic && ! t.active)
                 continue;
-            t.freq += 0.3 * (c.freq - t.freq); // 山の動きに合わせて、ゆっくり動かす
+            if (! voiced || t.active)
+                t.freq += 0.3 * (c.freq - t.freq); // 山の動きに合わせて、ゆっくり動かす（まだ削っていない山は、声がある間は動かさない）
             if (! voiced)
                 t.prominence += 0.3 * (c.prominence - t.prominence); // 声がある間は深さを固定する
-            t.presentSec += hopSeconds;
+            if (! voiced || t.active)
+                t.presentSec += hopSeconds; // 声がある間は、まだ削っていない山の居続けた時間を数えない（声の倍音を拾わないように）
             t.missingSec = 0;
+            t.left = false; // 声がないのにまた見えたなら、飛んでいなかった（一瞬見えなかっただけ）
             matched[static_cast<size_t> (best)] = true;
             continue;
         }
         if (voiced || c.harmonic)
             continue; // 新しい山は、声が出ていないフレームでだけ拾う
 
-        for (auto& t : tracks)
+        for (int i = 0; i < static_cast<int> (tracks.size()); ++i)
+        {
+            auto& t = tracks[static_cast<size_t> (i)];
             if (! t.used)
             {
                 t = {};
@@ -196,9 +216,20 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
                 t.freq = c.freq;
                 t.prominence = c.prominence;
                 t.presentSec = hopSeconds;
+                matched[static_cast<size_t> (i)] = true;
                 break;
             }
+        }
     }
+
+    // 見えている割合（声が出ていないフレームの、約 0.5 秒の移動平均）。とぎれとぎれの山（ノイズの揺らぎ）を持続音とみなさないように
+    if (! voiced)
+        for (int i = 0; i < static_cast<int> (tracks.size()); ++i)
+        {
+            auto& t = tracks[static_cast<size_t> (i)];
+            if (t.used)
+                t.hitRate += std::min (1.0, hopSeconds / kHitRateSec) * ((matched[static_cast<size_t> (i)] ? 1.0 : 0.0) - t.hitRate);
+        }
 
     // 見えなかった山: 声が出ているフレームでは数えない（声に隠れて見えないだけ）
     for (int i = 0; i < static_cast<int> (tracks.size()); ++i)
@@ -221,11 +252,13 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
             if (! n.used || n.missingSec > 0 || n.presentSec >= s.activateSec)
                 continue;
             for (auto& t : tracks)
-                if (&t != &n && t.used && t.fade >= 0.5 && ! t.jumpedFrom && t.missingSec > 0 && t.missingSec <= s.jumpSec
-                    && std::abs (n.freq - t.freq) <= s.jumpRange * t.freq)
+                if (&t != &n && t.used && t.fade >= 0.5 && ! t.jumpedFrom && t.missingSec > 0 && t.missingSec <= kJumpSec
+                    && std::abs (n.freq - t.freq) <= kJumpRange * t.freq)
                 {
                     n.presentSec = s.activateSec;
+                    n.hitRate = 1;
                     t.jumpedFrom = true;
+                    t.left = true;
                     break;
                 }
         }
@@ -235,8 +268,10 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
     int numEligible = 0;
     for (int i = 0; i < static_cast<int> (tracks.size()); ++i)
     {
-        const auto& t = tracks[static_cast<size_t> (i)];
-        if (t.used && t.presentSec >= s.activateSec && t.missingSec < s.releaseSec)
+        auto& t = tracks[static_cast<size_t> (i)];
+        if (t.used && t.presentSec >= s.activateSec && t.hitRate >= kMinHitRate)
+            t.confirmed = true;
+        if (t.used && t.confirmed && ! t.left && t.missingSec < kReleaseSec)
             order[static_cast<size_t> (numEligible++)] = i;
     }
     std::sort (order.begin(), order.begin() + numEligible, [&] (int x, int y)
@@ -254,8 +289,8 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
         if (t.active && t.missingSec == 0)
             t.fade = std::min (1.0, t.fade + hopSeconds / kAttackSeconds);
         else
-            t.fade = std::max (0.0, t.fade - hopSeconds / std::max (0.05, s.releaseSec));
-        if (! t.active && t.fade <= 0 && t.missingSec >= s.releaseSec)
+            t.fade = std::max (0.0, t.fade - hopSeconds / (t.left ? kAttackSeconds : kReleaseSec)); // 飛んだ元は、音がもうないので速く外す
+        if (! t.active && t.fade <= 0 && t.missingSec >= kReleaseSec)
             t = {};
     }
 }
@@ -270,7 +305,7 @@ int TonalTracker::notches (Notch* out, const TonalSettings& s) const
         const double depth = std::min (t.prominence, s.maxDepthDb) * t.fade;
         if (depth <= 0.01)
             continue;
-        out[count++] = { static_cast<float> (t.freq), static_cast<float> (depth), static_cast<float> (widthFor (t.freq, s)) };
+        out[count++] = { static_cast<float> (t.freq), static_cast<float> (depth), static_cast<float> (widthFor (t.freq)) };
     }
     return count;
 }

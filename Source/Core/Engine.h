@@ -32,6 +32,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -51,6 +52,8 @@ struct EngineMeters
     static float noiseCurveHz (int i) { return 20.0f * std::pow (1000.0f, static_cast<float> (i) / (kNoiseCurvePoints - 1)); }
     std::array<std::atomic<float>, kNoiseCurvePoints> noiseCurveDb {};
     std::atomic<bool> noiseCurveValid { false };
+    // 抑制量（3 段を合わせた下げる量、dB、0 以下）。点の周波数はノイズ推定と同じ
+    std::array<std::atomic<float>, kNoiseCurvePoints> gainCurveDb {};
 };
 
 class Engine
@@ -59,7 +62,11 @@ public:
     Engine();
 
     void prepare (double sampleRate, int maxBlockSize);
-    void process (float* data, int n, const ParamValues& p);
+    // shadow: 開発用（評価ツール）。入力と同じ FIR の列に、同じ時刻の作り直し・クロスフェードのまま、別の音を通す
+    // （setShadowCount の数だけ。その場で書き換える）。FIR は線形なので、声だけ・ノイズだけを通せば、出力をそれぞれの分に
+    // 正確に分けられる。バイパスと抑制ノイズ試聴は反映しない。本体は使わない（nullptr）
+    void process (float* data, int n, const ParamValues& p, float* const* shadow = nullptr);
+    void setShadowCount (int count); // prepare の前に呼ぶ（メモリを確保する）
     void setRealtime (bool isRealtime) noexcept { vad.setRealtime (isRealtime); }
 
     // 画面から（どのスレッドからでもよい。音の処理のスレッドが次の塊で受け取る）
@@ -81,16 +88,29 @@ private:
         clear
     };
 
+    // 特性（大きさの自然対数）から最小位相の FIR を作り、音にかける一式。影（開発用）にも同じ FIR をかける
+    struct FirPath
+    {
+        MinPhaseDesigner designer;
+        FadingFir fir;
+        std::vector<std::unique_ptr<FadingFir>> shadow;
+        std::vector<float> h;
+        std::vector<double> logMag; // 0Hz〜ナイキストの taps + 1 個（design の前に書く）
+        bool identity = true;
+
+        void prepare (int taps, int block, int fade, int shadowCount);
+        void design(); // logMag から FIR を作って替える（クロスフェード）
+        void bypass(); // 素通しに替える（もう素通しなら何もしない）
+    };
+
     struct Stage
     {
         FrameAnalyzer analyzer;
         NoiseEstimator noise;
         GainRule rule;
-        MinPhaseDesigner designer;
-        FadingFir fir;
-        std::vector<float> gainDb, h; // gainDb: 区画ごとの残す割合（dB、0 以下）
-        std::vector<double> logMag, weight; // weight: 設計の区画ごとの、この段が受け持つ割合（クロスオーバー）
-        bool identity = true;
+        FirPath path;
+        std::vector<float> gainDb;  // 区画ごとの残す割合（dB、0 以下）
+        std::vector<double> weight; // 設計の区画ごとの、この段が受け持つ割合（クロスオーバー）
     };
 
     void prepareStage (Stage& st, int size, bool lowSide);
@@ -99,6 +119,7 @@ private:
     void onTonalFrame (const ParamValues& p);
     void updateMonitor();
     void updateNoiseCurve (bool useLearned);
+    void updateGainCurve();
     void handleRequests();
     void storeLearnedCurve();
     void applyLearnedCurve (const std::vector<float>& curve);
@@ -113,19 +134,15 @@ private:
     // 狭帯域ノイズ
     FrameAnalyzer tonalAnalyzer;
     TonalTracker tonal;
-    MinPhaseDesigner tonalDesigner;
-    FadingFir tonalFir;
-    std::vector<float> tonalH;
-    std::vector<double> tonalLogMag, tonalFreqs;
+    FirPath tonalPath;
+    std::vector<double> tonalFreqs; // tonalPath.logMag の各点の周波数
     std::array<TonalTracker::Notch, TonalTracker::kMaxNotches> notchList {};
     int notchCount = 0;
-    bool tonalIdentity = true;
+    int shadowCount = 0;
+    std::vector<std::vector<float>> shadowChunk; // 影の、長い FIR を通した後の音
 
-    // 抑制ノイズ試聴
-    MinPhaseDesigner monitorDesigner;
-    FadingFir monitorFir;
-    std::vector<float> monitorH;
-    std::vector<double> monitorLogMag;
+    // 抑制ノイズ試聴（影は持たない。点の周波数は tonalFreqs と同じ）
+    FirPath monitorPath;
     bool monitorOn = false;
 
     VoiceDetector vad;

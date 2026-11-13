@@ -9,7 +9,6 @@ void NoiseEstimator::prepare (int bins, double frameRate, double sampleRate, int
 {
     channels = bins;
     frameRateHz = frameRate;
-    sampleRateHz = sampleRate;
     const auto c = static_cast<size_t> (channels);
 
     quietLength = std::max (1, static_cast<int> (std::lround (0.002 * sampleRate))); // 2ms

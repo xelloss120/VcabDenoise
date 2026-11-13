@@ -143,13 +143,12 @@ float FadingFir::headAt (const Slot& s) const noexcept
 
 float FadingFir::process (float x) noexcept
 {
+    // 同じ値を 2 か所に書き、位置を進める。進めた後は、今の入力が hist[histPos + block − 1] にあり、
+    // そこから古い向きに block 個が折り返さずに並ぶ（headAt はそう読む）
     hist[static_cast<size_t> (histPos)] = x;
     hist[static_cast<size_t> (histPos + block)] = x;
-    // headAt は histPos + block − 1 を今の位置として読むので、書いた後に進める前の位置を合わせる
-    ++histPos;
-    if (histPos == block)
+    if (++histPos == block)
         histPos = 0;
-    // 今の入力は hist[histPos − 1 + block]（= histPos + block − 1）
 
     auto outOf = [&] (const Slot& s)
     {

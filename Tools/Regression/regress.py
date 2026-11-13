@@ -2,6 +2,7 @@
 #   python regress.py make    今のビルドで基準を作る（build/regression/ref）
 #   python regress.py check   今のビルドの音を基準と比べる（結果は build/regression/out）
 #   python regress.py check 名前の一部 ...   名前にその文字列を含むものだけ
+#   python regress.py check --with キー=値 ...   全部の場合に、その設定を足す（新しいスイッチを切ったときに前と同じ音かを確かめる）
 # 先に make_tts.ps1 で build/regression/tts.wav を作っておく。
 import os
 import sys
@@ -39,9 +40,6 @@ def case(name, inp, sets=(), extra=()):
 case('clean_default', 'clean')
 case('pink_default', 'pink')
 case('pink_strong', 'pink', ['max_reduction=30', 'strength=9'])
-case('pink_no_presence', 'pink', ['presence_on=0'])
-case('pink_cepstrum', 'pink', ['presence_on=0', 'cepstrum_on=1'])
-case('pink_presence_cepstrum', 'pink', ['cepstrum_on=1'])
 case('pink_no_onset', 'pink', ['onset_protect=0'])
 case('pink_fast', 'pink', ['attack=2', 'release=30'])
 case('pink_rnn_low', 'pink', ['rnn_threshold=30'])
@@ -53,15 +51,19 @@ case('tones_noise_only', 'tones', ['noise_only=1'])
 case('tones_bypass', 'tones', ['bypass=1'])
 case('tones_off', 'tones', ['tonal_on=0'])
 case('tones_sensitive', 'tones', ['tonal_sensitivity=9', 'tonal_count=8', 'tonal_max_depth=40'])
-case('tones_no_jump', 'tones', ['tonal_jump_time=0'])
-case('tones_width', 'tones', ['tonal_width=140', 'tonal_low_width=40', 'tonal_neighbor=350'])
-case('tones_slow', 'tones', ['tonal_activate=2', 'tonal_release=4'])
 case('tones96_default', 'tones96')
+case('tones_slow', 'tones', ['tonal_activate=2'])
 
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else 'check'
-    filters = sys.argv[2:]
+    args = sys.argv[2:]
+    common = []
+    while '--with' in args:
+        i = args.index('--with')
+        common.append(args[i + 1])
+        del args[i:i + 2]
+    filters = args
     inputs = make_inputs()
     target = os.path.join(sg.WORK, 'ref' if mode == 'make' else 'out')
     os.makedirs(target, exist_ok=True)
@@ -70,7 +72,7 @@ def main():
         if filters and not any(f in name for f in filters):
             continue
         out = os.path.join(target, name + '.wav')
-        sg.render(inputs[inp], out, sets, extra)
+        sg.render(inputs[inp], out, sets + common, extra)
         if mode == 'check':
             _, a = wavfile.read(os.path.join(sg.WORK, 'ref', name + '.wav'))
             _, b = wavfile.read(out)

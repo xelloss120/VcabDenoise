@@ -47,13 +47,23 @@ double expIntE1 (double x)
 
 double erbHz (double f) { return 24.7 * (4.37 * f / 1000.0 + 1.0); } // Glasberg・Moore 1990
 
+// ERB の数（ERB-number、Glasberg・Moore 1990）と、その逆
+double erbNumber (double f) { return 21.4 * std::log10 (1.0 + 0.00437 * f); }
+double erbNumberToHz (double e) { return (std::pow (10.0, e / 21.4) - 1.0) / 0.00437; }
+
+constexpr double kBandSpacingErb = 2.0; // 帯域でまとめるときの、帯域の中心の間隔（RNNoise の 600Hz より上とほぼ同じ）
+constexpr int kBandMinBins = 2;         // 帯域の中心の間隔の下限（区画の数。1 区画だけの帯域を作らない。PercepNet と同じ考え方）
+// 帯域でまとめるときの、音声存在確率の「近く」「広く」の範囲（帯域の数。区画ごとのときの 3 区画・31 区画に当たる）
+constexpr int kBandLocalHalf = 1, kBandGlobalHalf = 4;
+// 帯域ごとの値の割合（残りは区画ごとの値）と、区画に戻した後のならしの幅（ERB）。2026-11-10 に聞き比べと数値で決め、11-12 に固定した
+constexpr double kBandMix = 0.5, kBandSmoothErb = 2.0;
+
 } // namespace
 
 void GainRule::prepare (int fftSize, double sampleRate, int hopSize)
 {
     size = fftSize;
     bins = size / 2 + 1;
-    sr = sampleRate;
     hopSeconds = hopSize / sampleRate;
     binHz = sampleRate / size;
     // 判定指向型の重み。もとの論文の 0.98 を、区切りの間隔 8ms のときの値とみなして、間隔に合わせる（VoiChanAlgoBox と同じ）
@@ -61,28 +71,45 @@ void GainRule::prepare (int fftSize, double sampleRate, int hopSize)
     // Cohen の声がない確率: ξ をならす重み（論文の 0.7 を、間隔 16ms のときの値とみなす）
     zetaAlpha = std::pow (0.7, hopSeconds / 0.016);
     const auto b = static_cast<size_t> (bins);
-    prevClean.assign (b, 0.0f);
-    xiNow.assign (b, 0.0f);
-    vNow.assign (b, 0.0f);
-    zeta.assign (b, 0.0f);
-    prevLn.assign (b, 0.0f);
-    lg.assign (b, 0.0);
-    work.assign (b + 1, 0.0);
-    fft.prepare (size);
-    spec.assign (b, {});
-    cep.assign (static_cast<size_t> (size), 0.0);
-    cepSmooth.assign (static_cast<size_t> (size / 2 + 1), 0.0);
-    beta.assign (static_cast<size_t> (size / 2 + 1), 0.0);
-    // ERB でならす範囲: 中心の前後に、ERB の半分ずつ
-    erbLo.assign (b, 0);
-    erbHi.assign (b, 0);
-    for (int k = 0; k < bins; ++k)
+    for (auto* t : { &binTrack, &bandTrack })
     {
-        const double halfWidth = 0.5 * erbHz (k * binHz) / binHz;
-        erbLo[static_cast<size_t> (k)] = std::max (0, static_cast<int> (std::floor (k - halfWidth + 0.5)));
-        erbHi[static_cast<size_t> (k)] = std::min (bins - 1, static_cast<int> (std::floor (k + halfWidth + 0.5)));
+        t->prevClean.assign (b, 0.0f);
+        t->xiNow.assign (b, 0.0f);
+        t->vNow.assign (b, 0.0f);
+        t->zeta.assign (b, 0.0f);
+        t->prevLn.assign (b, 0.0f);
     }
+    lg.assign (b, 0.0);
+    mixWork.assign (b, 0.0);
+    work.assign (b + 1, 0.0);
+    makeErbRanges (1.0, erbLo, erbHi);
     logWork.assign (b + 1, 0.0);
+    // 帯域でまとめるときの、帯域の中心（区画の位置）: 0Hz から、約 2 ERB ごと（2 区画以上空ける）。最後はナイキスト周波数
+    std::vector<double> centers { 0.0 };
+    for (;;)
+    {
+        const double c = centers.back();
+        const double next = std::max (erbNumberToHz (erbNumber (c * binHz) + kBandSpacingErb) / binHz, c + kBandMinBins);
+        if (next >= bins - 1 - 0.5 * kBandMinBins)
+            break;
+        centers.push_back (next);
+    }
+    centers.push_back (static_cast<double> (bins - 1));
+    numBands = static_cast<int> (centers.size());
+    bandLo.assign (b, 0);
+    bandT.assign (b, 0.0f);
+    for (int k = 0, j = 0; k < bins; ++k)
+    {
+        while (j < numBands - 2 && k >= centers[static_cast<size_t> (j + 1)])
+            ++j;
+        const double lo = centers[static_cast<size_t> (j)], hi = centers[static_cast<size_t> (j + 1)];
+        bandLo[static_cast<size_t> (k)] = j;
+        bandT[static_cast<size_t> (k)] = static_cast<float> (std::clamp ((k - lo) / (hi - lo), 0.0, 1.0));
+    }
+    bandPower.assign (static_cast<size_t> (numBands), 0.0f);
+    bandNoise.assign (static_cast<size_t> (numBands), 0.0f);
+    bandLg.assign (static_cast<size_t> (numBands), 0.0);
+    makeErbRanges (kBandSmoothErb, bandSmoothLo, bandSmoothHi);
     // 立ち上がり保護の時間（フレームの数に直す）
     const auto coef = [this] (double seconds) { return static_cast<float> (1.0 - std::exp (-hopSeconds / seconds)); };
     slowCoef = coef (0.040);
@@ -95,43 +122,79 @@ void GainRule::prepare (int fftSize, double sampleRate, int hopSize)
     reset();
 }
 
-void GainRule::reset()
+void GainRule::makeErbRanges (double widthErb, std::vector<int>& lowEdge, std::vector<int>& highEdge) const
+{
+    // 区画 k の中心の前後に、widthErb 個分の ERB の半分ずつ（端で切る）
+    lowEdge.assign (static_cast<size_t> (bins), 0);
+    highEdge.assign (static_cast<size_t> (bins), 0);
+    for (int k = 0; k < bins; ++k)
+    {
+        const double half = 0.5 * widthErb * erbHz (k * binHz) / binHz;
+        lowEdge[static_cast<size_t> (k)] = std::max (0, static_cast<int> (std::floor (k - half + 0.5)));
+        highEdge[static_cast<size_t> (k)] = std::min (bins - 1, static_cast<int> (std::floor (k + half + 0.5)));
+    }
+}
+
+void GainRule::Track::reset()
 {
     std::fill (prevClean.begin(), prevClean.end(), 0.0f);
     std::fill (zeta.begin(), zeta.end(), 0.0f);
     std::fill (prevLn.begin(), prevLn.end(), 0.0f);
-    std::fill (cepSmooth.begin(), cepSmooth.end(), 0.0);
-    std::fill (beta.begin(), beta.end(), 0.0);
+    first = true;
+}
+
+void GainRule::reset()
+{
+    binTrack.reset();
+    bandTrack.reset();
     std::fill (slowPower.begin(), slowPower.end(), 0.0f);
     std::fill (opened.begin(), opened.end(), 0.0f);
     std::fill (holdLeft.begin(), holdLeft.end(), 0);
-    first = true;
 }
 
 void GainRule::compute (const float* power, const float* noise, const GainSettings& s, float* gainDb)
 {
     const double lnFloor = -s.maxReductionDb / kLnToDb;
-    logMmse (power, noise, s);
-    for (auto& v : lg)
-        v = std::max (v, lnFloor);
-    if (s.presence)
-        applyPresence (lnFloor);
-    if (s.cepstrum)
-        smoothCepstrum();
+    if (s.bands)
+    {
+        // 帯域ごとの計算と区画ごとの計算を行って、残す割合の対数を混ぜる
+        computeBands (power, noise, s, lnFloor);
+        std::copy (lg.begin(), lg.end(), mixWork.begin());
+        computeBins (power, noise, s, lnFloor);
+        for (int k = 0; k < bins; ++k)
+        {
+            const auto i = static_cast<size_t> (k);
+            lg[i] = kBandMix * mixWork[i] + (1.0 - kBandMix) * lg[i];
+        }
+    }
     else
-        smoothTime (s);
-    smoothErb();
+    {
+        computeBins (power, noise, s, lnFloor);
+    }
     if (s.onsetProtect)
         protectOnset (power, noise);
     for (int k = 0; k < bins; ++k)
         gainDb[k] = static_cast<float> (std::clamp (lg[static_cast<size_t> (k)], lnFloor, 0.0) * kLnToDb);
-    first = false;
 }
 
-void GainRule::logMmse (const float* power, const float* noise, const GainSettings& s)
+void GainRule::computeBins (const float* power, const float* noise, const GainSettings& s, double lnFloor)
 {
+    logMmse (binTrack, power, noise, s, bins);
+    for (auto& v : lg)
+        v = std::max (v, lnFloor);
+    applyPresence (binTrack, lnFloor, bins, 1, 15);
+    smoothTime (binTrack, s, bins);
+    boxcar (erbLo, erbHi); // 前後 ERB の半分ずつの範囲で平均する
+    binTrack.first = false;
+}
+
+void GainRule::logMmse (Track& t, const float* power, const float* noise, const GainSettings& s, int n)
+{
+    auto& prevClean = t.prevClean;
+    auto& xiNow = t.xiNow;
+    auto& vNow = t.vNow;
     const double strength = std::pow (10.0, s.strengthDb / 10.0);
-    for (int k = 0; k < bins; ++k)
+    for (int k = 0; k < n; ++k)
     {
         const auto i = static_cast<size_t> (k);
         const double gamma = std::max (power[k] / std::max (noise[k] * strength, 1.0e-30), 1.0e-6);
@@ -147,19 +210,22 @@ void GainRule::logMmse (const float* power, const float* noise, const GainSettin
     }
 }
 
-void GainRule::applyPresence (double lnFloor)
+void GainRule::applyPresence (Track& t, double lnFloor, int n, int localHalf, int globalHalf)
 {
+    auto& zeta = t.zeta;
+    const auto& xiNow = t.xiNow;
+    const auto& vNow = t.vNow;
     // 声がある確率 p = 1 / (1 + q / (1 − q) × (1 + ξ) e^(−v))。q は声がない確率（前もって）。
-    // q は、ξ を時間でならし、近く（3 区画）、広く（31 区画）、フレーム全体の 3 つの平均が −10dB〜−5dB のどこにあるかで、
+    // q は、ξ を時間でならし、近く（区画ごとなら 3 区画）、広く（同じく 31 区画）、フレーム全体の 3 つの平均が −10dB〜−5dB のどこにあるかで、
     // 音声存在確率を 0〜1 にし、その積から決める（Cohen・Berdugo 2001）。G^p × 下限^(1−p) は、対数では p ln G + (1 − p) ln 下限
-    for (int k = 0; k < bins; ++k)
+    for (int k = 0; k < n; ++k)
         zeta[static_cast<size_t> (k)] = static_cast<float> (zetaAlpha * zeta[static_cast<size_t> (k)] + (1.0 - zetaAlpha) * xiNow[static_cast<size_t> (k)]);
     work[0] = 0;
-    for (int k = 0; k < bins; ++k)
+    for (int k = 0; k < n; ++k)
         work[static_cast<size_t> (k + 1)] = work[static_cast<size_t> (k)] + zeta[static_cast<size_t> (k)];
     auto average = [&] (int k, int half)
     {
-        const int lo = std::max (0, k - half), hi = std::min (bins - 1, k + half);
+        const int lo = std::max (0, k - half), hi = std::min (n - 1, k + half);
         return (work[static_cast<size_t> (hi + 1)] - work[static_cast<size_t> (lo)]) / (hi - lo + 1);
     };
     static constexpr double zetaMin = 0.1, zetaMax = 0.316; // −10dB、−5dB
@@ -170,92 +236,76 @@ void GainRule::applyPresence (double lnFloor)
         if (z >= zetaMax) return 1.0;
         return std::log (z / zetaMin) / lnRange;
     };
-    const double pFrame = likelihood (work[static_cast<size_t> (bins)] / bins);
-    for (int k = 0; k < bins; ++k)
+    const double pFrame = likelihood (work[static_cast<size_t> (n)] / n);
+    for (int k = 0; k < n; ++k)
     {
         const auto i = static_cast<size_t> (k);
-        const double q = pFrame <= 0.0 ? 0.95 : std::min (1.0 - likelihood (average (k, 1)) * likelihood (average (k, 15)) * pFrame, 0.95);
+        const double q = pFrame <= 0.0 ? 0.95 : std::min (1.0 - likelihood (average (k, localHalf)) * likelihood (average (k, globalHalf)) * pFrame, 0.95);
         const double ratio = q / (1.0 - q);
         const double p = 1.0 / (1.0 + ratio * (1.0 + xiNow[i]) * std::exp (-std::min (static_cast<double> (vNow[i]), 700.0)));
         lg[i] = p * lg[i] + (1.0 - p) * lnFloor;
     }
 }
 
-void GainRule::smoothTime (const GainSettings& s)
+void GainRule::computeBands (const float* power, const float* noise, const GainSettings& s, double lnFloor)
 {
+    // 区画の大きさとノイズ推定を、三角形を重ねた帯域でまとめる（区画 k は、両隣の帯域に 1 − t と t の重みで入る）
+    std::fill (bandPower.begin(), bandPower.end(), 0.0f);
+    std::fill (bandNoise.begin(), bandNoise.end(), 0.0f);
+    for (int k = 0; k < bins; ++k)
+    {
+        const auto j = static_cast<size_t> (bandLo[static_cast<size_t> (k)]);
+        const float t = bandT[static_cast<size_t> (k)];
+        bandPower[j] += (1.0f - t) * power[k];
+        bandPower[j + 1] += t * power[k];
+        bandNoise[j] += (1.0f - t) * noise[k];
+        bandNoise[j + 1] += t * noise[k];
+    }
+    // 帯域ごとに、log-MMSE → 音声存在確率 → 時間のならし（lg の先頭 numBands 個を使う）
+    logMmse (bandTrack, bandPower.data(), bandNoise.data(), s, numBands);
+    for (int j = 0; j < numBands; ++j)
+        lg[static_cast<size_t> (j)] = std::max (lg[static_cast<size_t> (j)], lnFloor);
+    applyPresence (bandTrack, lnFloor, numBands, kBandLocalHalf, kBandGlobalHalf);
+    smoothTime (bandTrack, s, numBands);
+    bandTrack.first = false;
+    // 区画に戻す: 隣の帯域の中心の間を、残す割合の対数で直線につなぐ
+    std::copy (lg.begin(), lg.begin() + numBands, bandLg.begin());
+    for (int k = 0; k < bins; ++k)
+    {
+        const auto j = static_cast<size_t> (bandLo[static_cast<size_t> (k)]);
+        const double t = bandT[static_cast<size_t> (k)];
+        lg[static_cast<size_t> (k)] = (1.0 - t) * bandLg[j] + t * bandLg[j + 1];
+    }
+    // 帯域のならし（帯域の中心の折れ目が、一つの帯域だけが開いたときに三角形の頂点になり、粒になるのを和らげる）
+    boxcar (bandSmoothLo, bandSmoothHi);
+}
+
+void GainRule::smoothTime (Track& t, const GainSettings& s, int n)
+{
+    auto& prevLn = t.prevLn;
+    const bool trackFirst = t.first;
     // 残す割合（対数）の変化を、上がる（開ける）ときはアタック、下がるときはリリースでならす
     const auto attack = static_cast<float> (1.0 - std::exp (-hopSeconds / (std::max (0.1, s.attackMs) * 0.001)));
     const auto release = static_cast<float> (1.0 - std::exp (-hopSeconds / (std::max (1.0, s.releaseMs) * 0.001)));
-    for (int k = 0; k < bins; ++k)
+    for (int k = 0; k < n; ++k)
     {
         const auto i = static_cast<size_t> (k);
         const auto target = static_cast<float> (lg[i]);
-        if (first)
+        if (trackFirst)
             prevLn[i] = target;
         prevLn[i] += (target - prevLn[i]) * (target > prevLn[i] ? attack : release);
         lg[i] = prevLn[i];
     }
 }
 
-void GainRule::smoothCepstrum()
+void GainRule::boxcar (const std::vector<int>& lowEdge, const std::vector<int>& highEdge)
 {
-    // 残す割合の対数を、ケプストラム（ケフレンシー＝時間の軸）に変える
-    for (int k = 0; k < bins; ++k)
-        spec[static_cast<size_t> (k)] = { lg[static_cast<size_t> (k)], 0.0 };
-    fft.inverse (spec.data(), cep.data());
-
-    // ケフレンシーごとに、時間方向にならす強さを決める（VoiChanAlgoBox と同じ値）:
-    //   包絡（0.5ms まで）→ ならさない、声の高さの山（70〜500Hz の周期のあたりで一番大きい山の前後）→ 弱く、それ以外 → 強く。
-    //   強さは 16ms 間隔のときの値で 0 / 0.2 / 0.9 とし、今の間隔に合わせる
-    const int quarter = size / 2;
-    const int envEnd = std::max (1, static_cast<int> (sr * 0.0005));
-    const int pitchLo = static_cast<int> (sr / 500.0), pitchHi = std::min (quarter, static_cast<int> (sr / 70.0));
-    int pitchQ = -1;
-    double pitchVal = 0.2; // これより小さい山は、声の高さとみなさない
-    for (int q = pitchLo; q <= pitchHi; ++q)
-        if (cep[static_cast<size_t> (q)] > pitchVal)
-        {
-            pitchVal = cep[static_cast<size_t> (q)];
-            pitchQ = q;
-        }
-    const double scale = hopSeconds / 0.016;
-    const double betaPitch = std::pow (0.2, scale), betaConst = std::pow (0.9, scale);
-    const double betaSmooth = std::pow (0.8, scale);
-    for (int q = 0; q <= quarter; ++q)
-    {
-        double b = betaConst;
-        if (q <= envEnd)
-            b = 0.0;
-        else if (pitchQ > 0 && std::abs (q - pitchQ) <= 2)
-            b = betaPitch;
-        auto& bs = beta[static_cast<size_t> (q)];
-        bs = first ? b : betaSmooth * bs + (1.0 - betaSmooth) * b;
-        auto& cs = cepSmooth[static_cast<size_t> (q)];
-        const double c = cep[static_cast<size_t> (q)];
-        cs = first ? c : bs * cs + (1.0 - bs) * c;
-    }
-
-    // 周波数に戻す（ケプストラムは左右対称なので、ならした片側を写す）
-    for (int q = 0; q <= quarter; ++q)
-    {
-        cep[static_cast<size_t> (q)] = cepSmooth[static_cast<size_t> (q)];
-        if (q > 0 && q < quarter)
-            cep[static_cast<size_t> (size - q)] = cepSmooth[static_cast<size_t> (q)];
-    }
-    fft.forward (cep.data(), spec.data());
-    for (int k = 0; k < bins; ++k)
-        lg[static_cast<size_t> (k)] = spec[static_cast<size_t> (k)].real();
-}
-
-void GainRule::smoothErb()
-{
-    // 残す割合の対数を、前後 ERB の半分ずつの範囲で平均する
     logWork[0] = 0;
     for (int k = 0; k < bins; ++k)
         logWork[static_cast<size_t> (k + 1)] = logWork[static_cast<size_t> (k)] + lg[static_cast<size_t> (k)];
     for (int k = 0; k < bins; ++k)
     {
-        const int lo = erbLo[static_cast<size_t> (k)], hi = erbHi[static_cast<size_t> (k)];
+        const int lo = lowEdge[static_cast<size_t> (k)], hi = highEdge[static_cast<size_t> (k)];
         if (hi > lo)
             lg[static_cast<size_t> (k)] = (logWork[static_cast<size_t> (hi + 1)] - logWork[static_cast<size_t> (lo)]) / (hi - lo + 1);
     }

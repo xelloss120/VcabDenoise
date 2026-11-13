@@ -21,30 +21,18 @@ enum class P : int
     strength,
     attackMs,
     releaseMs,
-    presenceOn,
-    cepstrumOn,
     onsetProtect,
 
     // ノイズ推定
     noiseMode,
     rnnThreshold,
-    saveLearned,
 
     // 狭帯域ノイズ（長い側）
     tonalOn,
     tonalSensitivity,
     tonalCount,
     tonalMaxDepth,
-    tonalLowHz,
-    tonalHighHz,
-    tonalNeighborHz,
     tonalActivateSec,
-    tonalReleaseSec,
-    tonalJumpSec,
-    tonalJumpRange,
-    tonalWidth,
-    tonalLowWidth,
-    tonalQuietDb,
 
     // 画面と入力（音の処理の設定ではないもの）
     inputChannel,

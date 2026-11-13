@@ -5,6 +5,7 @@
 // 使い方の例:
 //   vcabdn_render --in noisy.wav --out out.wav --set max_reduction=18
 //   vcabdn_render --in noisy.wav --out out.wav --set noise_mode=1 --learn 0:3
+//   vcabdn_render --in noisy.wav --out out.wav --shadow clean.wav out_clean.wav --shadow noise.wav out_noise.wav
 //   vcabdn_render --list   （パラメータの一覧）
 #include "../../Source/Core/Engine.h"
 
@@ -40,6 +41,8 @@ void printUsage()
         "  --noise-curve          処理の最後の、ノイズ推定（表示用の値）を出す\n"
         "  --notches              1 秒ごとに、抑制している狭帯域ノイズ（周波数と深さ）を出す\n"
         "  --realtime             実際の時間の速さで処理する（声の判定の作業スレッドが間に合うかを確かめる）\n"
+        "  --shadow <in> <out>    --in で分析して決めた FIR を、そのまま別の WAV にもかけて書き出す（複数可。評価用）\n"
+        "                         声だけ・ノイズだけを渡すと、出力を声の分とノイズの分に分けられる\n"
         "  --list                 パラメータの一覧を表示\n"
         "  --selftest             分割して畳み込む FIR を、そのまま畳み込んだ結果と比べる\n";
 }
@@ -148,6 +151,7 @@ int main (int argc, char* argv[])
         float value;
     };
     std::vector<Change> changes; // --set-at（途中で変えるパラメータ）
+    std::vector<std::pair<juce::String, juce::String>> shadowPaths; // --shadow（入力、出力）
 
     for (int i = 1; i < argc; ++i)
     {
@@ -168,6 +172,11 @@ int main (int argc, char* argv[])
         else if (a == "--noise-curve") printNoiseCurve = true;
         else if (a == "--notches") printNotches = true;
         else if (a == "--realtime") realtime = true;
+        else if (a == "--shadow")
+        {
+            const auto in = next();
+            shadowPaths.push_back ({ in, next() });
+        }
         else if (a == "--list") { printParams(); return 0; }
         else if (a == "--selftest") return selfTest();
         else if (a == "--set-at")
@@ -216,7 +225,24 @@ int main (int argc, char* argv[])
     reader->read (&buf, 0, total, 0, true, true);
     std::vector<float> data (buf.getReadPointer (0), buf.getReadPointer (0) + total);
 
+    std::vector<std::vector<float>> shadows; // 短ければ 0 で埋める
+    for (const auto& sp : shadowPaths)
+    {
+        std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (juce::File (sp.first)));
+        if (r == nullptr)
+        {
+            std::cerr << "読み込めません: " << sp.first << "\n";
+            return 1;
+        }
+        juce::AudioBuffer<float> b (static_cast<int> (r->numChannels), total);
+        b.clear();
+        r->read (&b, 0, static_cast<int> (std::min<juce::int64> (total, r->lengthInSamples)), 0, true, true);
+        shadows.emplace_back (b.getReadPointer (0), b.getReadPointer (0) + total);
+    }
+    std::vector<float*> shadowPtr (shadows.size());
+
     vcab::Engine engine;
+    engine.setShadowCount (static_cast<int> (shadows.size()));
     engine.prepare (sr, block);
     engine.setRealtime (realtime);
 
@@ -246,7 +272,9 @@ int main (int argc, char* argv[])
             if (pos <= at && at < pos + n)
                 params.v[static_cast<size_t> (c.index)] = c.value;
         }
-        engine.process (data.data() + pos, n, params);
+        for (size_t c = 0; c < shadows.size(); ++c)
+            shadowPtr[c] = shadows[c].data() + pos;
+        engine.process (data.data() + pos, n, params, shadows.empty() ? nullptr : shadowPtr.data());
         if (realtime)
             std::this_thread::sleep_for (std::chrono::microseconds (static_cast<int> (n * 1.0e6 / sr)));
         if (printNotches && pos + n >= nextReport)
@@ -274,20 +302,29 @@ int main (int argc, char* argv[])
         std::cout << "学習した値: " << (curve.empty() ? 0 : static_cast<int> (curve[1])) << " 点\n";
     }
 
-    juce::AudioBuffer<float> out (1, total);
-    out.copyFrom (0, 0, data.data(), total);
-    juce::File outFile (outPath);
-    outFile.deleteFile();
-    juce::WavAudioFormat wav;
-    std::unique_ptr<juce::OutputStream> stream (outFile.createOutputStream());
-    auto options = juce::AudioFormatWriterOptions().withSampleRate (sr).withNumChannels (1).withBitsPerSample (32)
-                       .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
-    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream, options));
-    if (writer == nullptr)
+    auto writeWav = [&] (const juce::String& path, const std::vector<float>& samples)
     {
-        std::cerr << "書き出せません: " << outPath << "\n";
+        juce::AudioBuffer<float> out (1, total);
+        out.copyFrom (0, 0, samples.data(), total);
+        juce::File outFile (path);
+        outFile.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> stream (outFile.createOutputStream());
+        auto options = juce::AudioFormatWriterOptions().withSampleRate (sr).withNumChannels (1).withBitsPerSample (32)
+                           .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+        std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream, options));
+        if (writer == nullptr)
+        {
+            std::cerr << "書き出せません: " << path << "\n";
+            return false;
+        }
+        writer->writeFromAudioSampleBuffer (out, 0, total);
+        return true;
+    };
+    if (! writeWav (outPath, data))
         return 1;
-    }
-    writer->writeFromAudioSampleBuffer (out, 0, total);
+    for (size_t c = 0; c < shadows.size(); ++c)
+        if (! writeWav (shadowPaths[c].second, shadows[c]))
+            return 1;
     return 0;
 }
