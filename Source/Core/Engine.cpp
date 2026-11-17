@@ -53,6 +53,17 @@ GainSettings gainSettings (const ParamValues& p)
     return s;
 }
 
+// 学習した値の曲線（Engine.h の形式）として読めるか。壊れた保存データで、範囲の外を読んだり NaN を広げたりしないように
+bool isValidCurve (const std::vector<float>& curve)
+{
+    if (curve.size() < 6 || curve[0] != 1.0f)
+        return false;
+    const float points = curve[1];
+    if (! (points >= 2.0f) || points > static_cast<float> ((curve.size() - 2) / 2))
+        return false;
+    return std::all_of (curve.begin(), curve.end(), [] (float v) { return std::isfinite (v); });
+}
+
 TonalSettings tonalSettings (const ParamValues& p)
 {
     TonalSettings s;
@@ -118,6 +129,7 @@ void Engine::FirPath::bypass()
 void Engine::prepareStage (Stage& st, int size, bool lowSide)
 {
     const int hop = size / 4;
+    st.lowSide = lowSide;
     st.analyzer.prepare (size, hop, FrameAnalyzer::Window::recentHeavy);
     st.noise.prepare (size / 2 + 1, sr / hop, sr, size);
     st.rule.prepare (size, sr, hop);
@@ -127,7 +139,7 @@ void Engine::prepareStage (Stage& st, int size, bool lowSide)
     for (int k = 0; k <= size; ++k)
     {
         const double hz = k * sr / (2.0 * size);
-        st.weight[static_cast<size_t> (k)] = lowSide ? crossoverLow (hz) : 1.0 - crossoverLow (hz);
+        st.weight[static_cast<size_t> (k)] = st.lowSide ? crossoverLow (hz) : 1.0 - crossoverLow (hz);
     }
 }
 
@@ -166,25 +178,7 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
     mixStep = static_cast<float> (1.0 / (0.01 * sr));
     meterCoef = 1.0 - std::exp (-1.0 / (0.3 * sr));
 
-    // 最小値の見積もりを本来の大きさに戻す倍率を、白色雑音で測る（6 秒）
-    {
-        WhiteNoise noise;
-        for (auto* st : { &shortSide, &midSide })
-            st->noise.beginCalibration();
-        const int total = static_cast<int> (6.0 * sr);
-        for (int i = 0; i < total; ++i)
-        {
-            const float x = noise.next();
-            for (auto* st : { &shortSide, &midSide })
-                if (st->analyzer.push (x))
-                    st->noise.push (st->analyzer.powers(), 0);
-        }
-        for (auto* st : { &shortSide, &midSide })
-        {
-            st->noise.finishCalibration();
-            st->analyzer.reset();
-        }
-    }
+    calibrateNoise();
 
     // 学習した値の曲線を作る場所（区画の数から大きさが決まる）
     {
@@ -194,15 +188,39 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
         learnedCurve.reserve (2 + points * 2);
         if (! learnedCurve.empty())
             applyLearnedCurve (learnedCurve); // サンプルレートが変わっても、覚えた値を使い続ける
+        // ロックの中で消す（外で消すと、その間に importLearned が立てた印まで消してしまう）
+        hasPendingCurve.store (false);
     }
-    hasPendingCurve.store (false);
 
     broadbandActive = true;
     phase = 0;
     bypassMix = noiseOnlyMix = 0;
     inPower = outPower = 0;
-    wasLearning = false;
+    // 画面の値も、前の音の分を消す（狭帯域の谷と抑制量は、次の分析まで前のものが残るため）
     meters.noiseCurveValid.store (false);
+    meters.notchCount.store (0);
+    updateGainCurve();
+}
+
+void Engine::calibrateNoise()
+{
+    // 最小値の見積もりを本来の大きさに戻す倍率を、白色雑音で測る（6 秒）
+    WhiteNoise noise;
+    for (auto* st : { &shortSide, &midSide })
+        st->noise.beginCalibration();
+    const int total = static_cast<int> (6.0 * sr);
+    for (int i = 0; i < total; ++i)
+    {
+        const float x = noise.next();
+        for (auto* st : { &shortSide, &midSide })
+            if (st->analyzer.push (x))
+                st->noise.push (st->analyzer.powers(), 0);
+    }
+    for (auto* st : { &shortSide, &midSide })
+    {
+        st->noise.finishCalibration();
+        st->analyzer.reset();
+    }
 }
 
 void Engine::handleRequests()
@@ -276,11 +294,14 @@ void Engine::storeLearnedCurve()
 
 void Engine::applyLearnedCurve (const std::vector<float>& curve)
 {
-    if (curve.size() < 6 || curve[0] != 1.0f)
+    if (! isValidCurve (curve))
+    {
+        // 空（学習した値のない設定を読み込んだ）か、読めない曲線: 覚えた値を使わない状態に戻す
+        for (auto* st : { &shortSide, &midSide })
+            st->noise.setLearned (false);
         return;
+    }
     const int points = static_cast<int> (curve[1]);
-    if (points < 2 || static_cast<int> (curve.size()) < 2 + points * 2)
-        return;
     auto hzAt = [&] (int i) { return static_cast<double> (curve[static_cast<size_t> (2 + i * 2)]); };
     auto dbAt = [&] (int i) { return static_cast<double> (curve[static_cast<size_t> (3 + i * 2)]); };
     for (auto* st : { &shortSide, &midSide })
@@ -311,6 +332,8 @@ std::vector<float> Engine::exportLearned()
 void Engine::importLearned (std::vector<float> curve)
 {
     std::lock_guard<std::mutex> lock (curveMutex);
+    if (! isValidCurve (curve))
+        curve.clear(); // 読めない曲線は「学習した値なし」として扱う（そのまま持つと、次の保存でまた書き出してしまう）
     learnedCurve = curve;
     learnedCurve.reserve (curveScratch.capacity()); // 音の処理のスレッドで入れ替えた後も、作り直しで確保が起きないように
     pendingCurve = std::move (curve);
@@ -333,7 +356,7 @@ void Engine::onBroadbandFrame (Stage& st, const ParamValues& p, bool useLearned)
 {
     st.noise.push (st.analyzer.powers(), quietNow);
     auto gs = gainSettings (p);
-    gs.bands = &st == &shortSide; // 帯域でまとめるのは短い側だけ（低い帯域は、声の基音とファンの音を分ける細かさが要る）
+    gs.bands = ! st.lowSide; // 帯域でまとめるのは短い側だけ（低い帯域は、声の基音とファンの音を分ける細かさが要る）
     st.rule.compute (st.analyzer.powers(), st.noise.estimate (useLearned), gs, st.gainDb.data());
 
     // 設計の区画は、分析の区画の 2 倍の細かさ（区画の間は dB で直線補間）。受け持たない帯域は 0dB（素通し）
@@ -351,7 +374,8 @@ void Engine::onBroadbandFrame (Stage& st, const ParamValues& p, bool useLearned)
     else
         st.path.design();
 
-    if (&st == &midSide)
+    // 画面の線は、遅いほうの段（中くらいの側）の分析ごとに作り直す
+    if (st.lowSide)
     {
         updateNoiseCurve (useLearned);
         updateGainCurve();
@@ -459,7 +483,7 @@ void Engine::process (float* data, int n, const ParamValues& p, float* const* sh
         shadow = nullptr;
     handleRequests();
     vad.setThreshold (p.get (P::rnnThreshold) * 0.01f);
-    const bool useLearned = static_cast<NoiseMode> (p.index (P::noiseMode)) == NoiseMode::learned;
+    const bool useLearned = p.learnedMode();
 
     // 抑制ノイズ試聴: 入れたらすぐ（次の塊から）特性を作る。切ったら素通しに戻す
     if (p.on (P::noiseOnly) != monitorOn)
@@ -472,12 +496,6 @@ void Engine::process (float* data, int n, const ParamValues& p, float* const* sh
     }
     // 抑制量上限 0dB（学習中を除く）では、広い帯域の側を止める
     const bool broadbandOn = p.get (P::maxReduction) > 0.0 || shortSide.noise.learning();
-    if (broadbandOn != broadbandActive)
-    {
-        if (! broadbandOn)
-            stopBroadband();
-        broadbandActive = broadbandOn;
-    }
 
     const float bypassTarget = p.on (P::bypass) ? 1.0f : 0.0f;
     const float noiseOnlyTarget = p.on (P::noiseOnly) ? 1.0f : 0.0f;
@@ -487,6 +505,15 @@ void Engine::process (float* data, int n, const ParamValues& p, float* const* sh
     {
         // FIR の塊と分析の間隔（どちらも blockSize の倍数）にそろえて、区切って処理する
         const int len = std::min (n - done, blockSize - phase);
+
+        // 広い帯域の側の入り切りは、塊の頭でだけ行う。止めるときに分析の時期を数え直すので、塊の途中で行うと
+        // （ホストの塊が blockSize の倍数でないとき）、戻した後の分析が FIR の塊の境目からずれ、FIR の作り直しが 1 塊遅れる
+        if (phase == 0 && broadbandOn != broadbandActive)
+        {
+            if (! broadbandOn)
+                stopBroadband();
+            broadbandActive = broadbandOn;
+        }
 
         // 1. 長い FIR（狭帯域ノイズ）と、その分析（入力で）
         for (int i = 0; i < len; ++i)
@@ -545,17 +572,24 @@ void Engine::process (float* data, int n, const ParamValues& p, float* const* sh
         phase = (phase + len) % blockSize;
     }
 
+    updateLevelMeters (n, sumIn, sumOut);
+}
+
+void Engine::updateLevelMeters (int n, double sumIn, double sumOut)
+{
     meters.voice.store (voiced);
     meters.reductionDb.store (static_cast<float> (std::max (0.0, 10.0 * std::log10 ((inPower + 1.0e-20) / (outPower + 1.0e-20)))));
-    auto toDb = [] (double power) { return static_cast<float> (10.0 * std::log10 (power + 1.0e-12)); };
-    if (n > 0)
+    if (n <= 0)
+        return;
+    // 入出力の音量は、塊の RMS を約 0.3 秒でならす（画面のメーター用）
+    const float a = static_cast<float> (1.0 - std::exp (-n / (0.3 * sr)));
+    auto smooth = [a] (std::atomic<float>& meter, double power)
     {
-        // 入出力の音量は、塊の RMS を約 0.3 秒でならす（画面のメーター用）
-        const float a = static_cast<float> (1.0 - std::exp (-n / (0.3 * sr)));
-        const float inDb = toDb (sumIn / n), outDb = toDb (sumOut / n);
-        meters.inputDb.store (meters.inputDb.load() + a * (inDb - meters.inputDb.load()));
-        meters.outputDb.store (meters.outputDb.load() + a * (outDb - meters.outputDb.load()));
-    }
+        const float db = static_cast<float> (10.0 * std::log10 (power + 1.0e-12));
+        meter.store (meter.load() + a * (db - meter.load()));
+    };
+    smooth (meters.inputDb, sumIn / n);
+    smooth (meters.outputDb, sumOut / n);
 }
 
 } // namespace vcab

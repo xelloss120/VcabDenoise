@@ -25,7 +25,7 @@ class NoiseEstimator
 {
 public:
     void prepare (int bins, double frameRate, double sampleRate, int settleSamples);
-    void reset();          // 自動追従の状態だけ消す（学習した値は残す）
+    void reset();          // 自動追従の状態だけ消す（学習した値と、学習中かどうかは残す）
 
     void observe (float x) noexcept
     {
@@ -75,6 +75,7 @@ private:
     static constexpr float kOutlier = 10.0f;            // 見積もりよりこれだけ（10dB）大きい区画は、ごく弱くしか使わない
     static constexpr float kSilentLevel = 1.0e-6f;      // -120dBFS より小さいサンプルが quietLength 続いたら、無音とみなす
     static constexpr float kTiny = 1.0e-20f;
+    static constexpr int kCountLimit = 1 << 30;         // フレームの数を数える変数の上限（あふれないように）
 
     void trackMinimum (const float* power);
     void calibrationFrame (const float* power); // 測っている間の push（大きさをためるだけ）

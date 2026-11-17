@@ -1,81 +1,97 @@
 // 実数の FFT（高速フーリエ変換）。計算は pffft（単精度、SSE。https://github.com/marton78/pffft）に任せる。
 // 前は倍精度・基数 2 の自作だったが、FFT がかかわる処理（FIR を作る、かける、分析）が全体の 4 割ほどを占めていたので替えた。
-// 入出力は前と同じ形（実数の時間の波形と、0Hz〜ナイキストの倍精度の複素数）にして、使う側は変えずに済むようにしている。
+// 入出力は pffft と同じ単精度のまま受け渡す（2026-11-17。前は、使う側が倍精度の複素数で受け取り、変換のたびに詰め替えていた）。
 // 大きさは 2 のべき乗で 32 以上（pffft の実数の FFT の条件）。準備（prepare）のときだけメモリを確保する。
+//
+// 周波数の側の並びは 2 通り:
+//   順番どおり（forward / inverse）: [0Hz の実部, ナイキストの実部, 1 の実部, 1 の虚部, 2 の実部, 2 の虚部, …]（N 個）
+//   pffft の中の並び（forwardRaw / inverseRaw / multiplyAdd）: 並べ替えを省いた形。中身は読めないが、
+//     掛け算して足し込む（畳み込み）だけならこのまま計算でき、SIMD で速い
+// FFT に渡す配列は、どれも AlignedFloats（SIMD 用にそろえた場所）にする。
 #pragma once
 
 #include <pffft.h>
 
-#include <complex>
+#include <algorithm>
+#include <cstddef>
 #include <memory>
 
 namespace vcab
 {
 
-namespace Fft
+// SIMD 用にそろえた場所に置く、単精度の配列（pffft に渡す配列はこれにする）
+class AlignedFloats
 {
-using Complex = std::complex<double>;
-}
+public:
+    void assign (size_t newSize)
+    {
+        data.reset (static_cast<float*> (pffft_aligned_malloc (newSize * sizeof (float))));
+        count = newSize;
+        clear();
+    }
+    void clear() noexcept { std::fill_n (data.get(), count, 0.0f); }
+    float* get() noexcept { return data.get(); }
+    const float* get() const noexcept { return data.get(); }
+    size_t size() const noexcept { return count; }
+    float& operator[] (size_t i) noexcept { return data.get()[i]; }
+    float operator[] (size_t i) const noexcept { return data.get()[i]; }
 
-// 実数の FFT（大きさ N）。周波数の側は 0〜N/2 の N/2 + 1 個（残りは複素共役で決まる）
+private:
+    struct Deleter { void operator() (float* p) const noexcept { pffft_aligned_free (p); } };
+    std::unique_ptr<float, Deleter> data;
+    size_t count = 0;
+};
+
+// 実数の FFT（大きさ N）。時間の側も周波数の側も N 個の単精度（AlignedFloats）。入力と出力に同じ配列を渡してもよい
 class RealFft
 {
 public:
-    using Complex = Fft::Complex;
-
     void prepare (int newSize)
     {
         size = newSize;
         setup.reset (pffft_new_setup (size, PFFFT_REAL));
-        const auto bytes = static_cast<size_t> (size) * sizeof (float);
-        for (auto* b : { &in, &out, &work })
-            b->reset (static_cast<float*> (pffft_aligned_malloc (bytes)));
+        work.assign (static_cast<size_t> (size));
     }
 
-    // 時間（実数 N 個）→ 周波数（N/2 + 1 個）
-    template <typename Real>
-    void forward (const Real* x, Complex* y) noexcept
+    // 時間 → 周波数（順番どおりの並び）
+    void forward (const float* x, float* y) noexcept
     {
-        float* a = in.get();
-        for (int n = 0; n < size; ++n)
-            a[n] = static_cast<float> (x[n]);
-        pffft_transform_ordered (setup.get(), a, out.get(), work.get(), PFFFT_FORWARD);
-        // pffft の並び: [0Hz, ナイキスト, 1 の実部, 1 の虚部, 2 の実部, …]
-        const float* b = out.get();
-        const int m = size / 2;
-        y[0] = { b[0], 0.0 };
-        y[m] = { b[1], 0.0 };
-        for (int k = 1; k < m; ++k)
-            y[k] = { b[2 * k], b[2 * k + 1] };
+        pffft_transform_ordered (setup.get(), x, y, work.get(), PFFFT_FORWARD);
     }
 
-    // 周波数（N/2 + 1 個）→ 時間（実数 N 個。1/N をかけて、forward と対になるようにする）
-    template <typename Real>
-    void inverse (const Complex* y, Real* x) noexcept
+    // 周波数（順番どおりの並び）→ 時間（1/N をかけて、forward と対になるようにする。N は 2 のべき乗なので、この掛け算で誤差は出ない）
+    void inverse (const float* y, float* x) noexcept
     {
-        float* a = in.get();
-        const int m = size / 2;
-        a[0] = static_cast<float> (y[0].real());
-        a[1] = static_cast<float> (y[m].real());
-        for (int k = 1; k < m; ++k)
-        {
-            a[2 * k] = static_cast<float> (y[k].real());
-            a[2 * k + 1] = static_cast<float> (y[k].imag());
-        }
-        pffft_transform_ordered (setup.get(), a, out.get(), work.get(), PFFFT_BACKWARD);
-        const float* b = out.get();
-        const double scale = 1.0 / size;
+        pffft_transform_ordered (setup.get(), y, x, work.get(), PFFFT_BACKWARD);
+        const float scale = 1.0f / static_cast<float> (size);
         for (int n = 0; n < size; ++n)
-            x[n] = static_cast<Real> (b[n] * scale);
+            x[n] *= scale;
+    }
+
+    // 時間 → 周波数（pffft の中の並び）
+    void forwardRaw (const float* x, float* y) noexcept
+    {
+        pffft_transform (setup.get(), x, y, work.get(), PFFFT_FORWARD);
+    }
+
+    // 周波数（pffft の中の並び）→ 時間。1/N はかけない（multiplyAdd の scaling でかけておく）
+    void inverseRaw (const float* y, float* x) noexcept
+    {
+        pffft_transform (setup.get(), y, x, work.get(), PFFFT_BACKWARD);
+    }
+
+    // acc += a × b × scaling（複素数の掛け算。どれも pffft の中の並び）
+    void multiplyAdd (const float* a, const float* b, float* acc, float scaling) noexcept
+    {
+        pffft_zconvolve_accumulate (setup.get(), a, b, acc, scaling);
     }
 
 private:
     struct SetupDeleter { void operator() (PFFFT_Setup* s) const noexcept { pffft_destroy_setup (s); } };
-    struct BufferDeleter { void operator() (float* p) const noexcept { pffft_aligned_free (p); } };
 
     int size = 0;
     std::unique_ptr<PFFFT_Setup, SetupDeleter> setup;
-    std::unique_ptr<float, BufferDeleter> in, out, work;
+    AlignedFloats work;
 };
 
 } // namespace vcab

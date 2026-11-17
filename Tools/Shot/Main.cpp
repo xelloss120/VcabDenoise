@@ -12,8 +12,7 @@
 //   vcabdn_shot --in demo.wav --frames frames --audio-out demo_out.wav --scale 2 --event 11:bypass=0 --event 30.3:noise_only=1 --set bypass=1
 #include "../../Source/Plugin/PluginEditor.h"
 #include "../../Source/Plugin/PluginProcessor.h"
-
-#include <juce_audio_formats/juce_audio_formats.h>
+#include "../Common/WavFile.h"
 
 #include <algorithm>
 #include <iostream>
@@ -194,20 +193,10 @@ int main (int argc, char* argv[])
 
     if (frameMode)
     {
-        if (audioOutPath.isNotEmpty())
+        if (audioOutPath.isNotEmpty() && ! tools::writeMonoWav (juce::File (audioOutPath), output.getReadPointer (0), total, sr))
         {
-            juce::File outFile (audioOutPath);
-            outFile.deleteFile();
-            juce::WavAudioFormat wav;
-            std::unique_ptr<juce::OutputStream> stream (outFile.createOutputStream());
-            auto options = juce::AudioFormatWriterOptions().withSampleRate (sr).withNumChannels (1).withBitsPerSample (32)
-                               .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
-            std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream, options));
-            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (output, 0, total))
-            {
-                std::cerr << "書き出せません: " << audioOutPath << "\n";
-                return 1;
-            }
+            std::cerr << "書き出せません: " << audioOutPath << "\n";
+            return 1;
         }
         std::cout << "書き出した: " << framesPath << "（" << frameIndex << " 枚）\n";
     }

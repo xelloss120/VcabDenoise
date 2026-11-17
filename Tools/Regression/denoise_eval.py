@@ -2,7 +2,6 @@
 #   python denoise_eval.py max_reduction=18 strength=3 ...   （設定を並べる。なければ初期値）
 #   --kind pink|white|fan|tones でノイズの種類、--level <dB> でノイズの大きさ（初期値 -50）
 import os
-import sys
 
 import numpy as np
 from scipy.io import wavfile
@@ -56,13 +55,4 @@ def evaluate(sets, label='', kind='pink', noise_db=-50):
 
 
 if __name__ == '__main__':
-    args = sys.argv[1:]
-    kind, level = 'pink', -50.0
-    if '--kind' in args:
-        kind = args[args.index('--kind') + 1]
-        del args[args.index('--kind'):args.index('--kind') + 2]
-    if '--level' in args:
-        level = float(args[args.index('--level') + 1])
-        del args[args.index('--level'):args.index('--level') + 2]
-    sets = [a for a in args if '=' in a]
-    evaluate(sets, ' '.join(sets) or '初期値', kind=kind, noise_db=level)
+    sg.run_eval(evaluate, default_level=-50.0)

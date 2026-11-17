@@ -7,6 +7,12 @@
 #include <chrono>
 #include <cmath>
 
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+ #include <pmmintrin.h>
+ #include <xmmintrin.h>
+ #define VCAB_HAS_SSE_DENORMAL_CONTROL 1
+#endif
+
 namespace vcab
 {
 
@@ -204,6 +210,12 @@ bool VoiceDetector::processFrames()
 
 void VoiceDetector::workerLoop()
 {
+    // ごく小さい値（デノーマル）を 0 として扱う。無音が続くと RNNoise の中の値がデノーマルになり、計算が大幅に遅くなることがあるため
+    // （音の処理のスレッドは、ホストやプラグインの側で同じ設定にしている。このスレッドは自分で設定する）
+#ifdef VCAB_HAS_SSE_DENORMAL_CONTROL
+    _MM_SET_FLUSH_ZERO_MODE (_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE (_MM_DENORMALS_ZERO_ON);
+#endif
     while (! stopWorker.load())
     {
         bool did = false;
@@ -254,7 +266,9 @@ void VoiceDetector::process (const float* data, int n)
     written.store (w + count, std::memory_order_release);
     if (realtime.load())
     {
-        wake.notify_one();
+        // 判定できる 1 回分（480 サンプル）がそろったときだけ起こす（128 サンプルの塊ごとに起こすと、4 回に 3 回は空振りになる）
+        if (w + count - judged.load (std::memory_order_acquire) >= kAiFrame)
+            wake.notify_one();
     }
     else
     {

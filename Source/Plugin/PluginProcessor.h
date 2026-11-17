@@ -55,6 +55,9 @@ public:
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
+    // ホストのバイパスを、画面の「バイパス」と同じものにする（ホスト側で切っても、中の分析が続き、10ms でなめらかに移る。
+    // 返さないと、ホストのバイパスの間は processBlock が呼ばれず、分析が止まる）
+    juce::AudioProcessorParameter* getBypassParameter() const override { return bypassParam; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -82,9 +85,11 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    void mixToMono (const juce::AudioBuffer<float>& buffer, int n, int choice); // 入力チャンネルの設定に従って mono に書く
 
     juce::AudioProcessorValueTreeState apvts;
     std::array<std::atomic<float>*, vcab::kNumParams> raw {};
+    juce::RangedAudioParameter* bypassParam = nullptr;
 
     vcab::Engine engine;
     std::vector<float> mono;

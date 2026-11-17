@@ -9,8 +9,6 @@
 
 #include "Fft.h"
 
-#include <vector>
-
 namespace vcab
 {
 
@@ -26,8 +24,7 @@ public:
 private:
     int n = 0;
     RealFft fft;
-    std::vector<Fft::Complex> spec;
-    std::vector<double> cep;
+    AlignedFloats spec, cep; // 周波数の側（並びは Fft.h の「順番どおり」）と、時間の側
 };
 
 } // namespace vcab

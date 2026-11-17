@@ -4,6 +4,7 @@
 #include "Fft.h"
 #include "MathConstants.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -24,7 +25,7 @@ public:
         size = fftSize;
         hop = hopSize;
         fft.prepare (size);
-        frame.assign (static_cast<size_t> (size), 0.0);
+        frame.assign (static_cast<size_t> (size));
         window.assign (static_cast<size_t> (size), 0.0);
         if (kind == Window::hann)
         {
@@ -46,7 +47,7 @@ public:
             windowSum += w;
         }
         ring.assign (static_cast<size_t> (size), 0.0f);
-        spec.assign (static_cast<size_t> (size / 2 + 1), {});
+        spec.assign (static_cast<size_t> (size));
         power.assign (static_cast<size_t> (size / 2 + 1), 0.0f);
         reset();
     }
@@ -76,12 +77,17 @@ public:
         // リングを古い順に並べ直しながら窓をかける（pos が一番古い）
         const int first = size - pos;
         for (int i = 0; i < first; ++i)
-            frame[static_cast<size_t> (i)] = ring[static_cast<size_t> (pos + i)] * window[static_cast<size_t> (i)];
+            frame[static_cast<size_t> (i)] = static_cast<float> (ring[static_cast<size_t> (pos + i)] * window[static_cast<size_t> (i)]);
         for (int i = first; i < size; ++i)
-            frame[static_cast<size_t> (i)] = ring[static_cast<size_t> (i - first)] * window[static_cast<size_t> (i)];
-        fft.forward (frame.data(), spec.data());
-        for (int k = 0; k <= size / 2; ++k)
-            power[static_cast<size_t> (k)] = static_cast<float> (std::norm (spec[static_cast<size_t> (k)]));
+            frame[static_cast<size_t> (i)] = static_cast<float> (ring[static_cast<size_t> (i - first)] * window[static_cast<size_t> (i)]);
+        fft.forward (frame.get(), spec.get());
+        // 並びは [0Hz, ナイキスト, 1 の実部, 1 の虚部, …]。2 乗の和は倍精度で求める
+        const auto square = [] (float v) { return static_cast<double> (v) * v; };
+        const int half = size / 2;
+        power[0] = static_cast<float> (square (spec[0]));
+        power[static_cast<size_t> (half)] = static_cast<float> (square (spec[1]));
+        for (int k = 1; k < half; ++k)
+            power[static_cast<size_t> (k)] = static_cast<float> (square (spec[static_cast<size_t> (2 * k)]) + square (spec[static_cast<size_t> (2 * k + 1)]));
         return true;
     }
 
@@ -96,10 +102,10 @@ public:
 private:
     int size = 512, hop = 128, pos = 0, sinceHop = 0, firstHopHead = 0;
     RealFft fft;
-    std::vector<double> window, frame;
+    std::vector<double> window;
+    AlignedFloats frame, spec;
     double windowEnergy = 1, windowSum = 1;
     std::vector<float> ring, power;
-    std::vector<Fft::Complex> spec;
 };
 
 } // namespace vcab

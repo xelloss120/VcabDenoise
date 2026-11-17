@@ -8,8 +8,7 @@
 //   vcabdn_render --in noisy.wav --out out.wav --shadow clean.wav out_clean.wav --shadow noise.wav out_noise.wav
 //   vcabdn_render --list   （パラメータの一覧）
 #include "../../Source/Core/Engine.h"
-
-#include <juce_audio_formats/juce_audio_formats.h>
+#include "../Common/WavFile.h"
 
 #include <chrono>
 #include <cmath>
@@ -304,22 +303,10 @@ int main (int argc, char* argv[])
 
     auto writeWav = [&] (const juce::String& path, const std::vector<float>& samples)
     {
-        juce::AudioBuffer<float> out (1, total);
-        out.copyFrom (0, 0, samples.data(), total);
-        juce::File outFile (path);
-        outFile.deleteFile();
-        juce::WavAudioFormat wav;
-        std::unique_ptr<juce::OutputStream> stream (outFile.createOutputStream());
-        auto options = juce::AudioFormatWriterOptions().withSampleRate (sr).withNumChannels (1).withBitsPerSample (32)
-                           .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
-        std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream, options));
-        if (writer == nullptr)
-        {
-            std::cerr << "書き出せません: " << path << "\n";
-            return false;
-        }
-        writer->writeFromAudioSampleBuffer (out, 0, total);
-        return true;
+        if (tools::writeMonoWav (juce::File (path), samples.data(), total, sr))
+            return true;
+        std::cerr << "書き出せません: " << path << "\n";
+        return false;
     };
     if (! writeWav (outPath, data))
         return 1;

@@ -90,21 +90,41 @@ void MonitorView::paint (juce::Graphics& g)
     const auto band = area.removeFromBottom (static_cast<float> (voiceBand));
     g.setColour (juce::Colour (0xff15202f));
     g.fillRect (area);
+    drawVoiceBand (g, band);
 
-    // 声の帯（右の端が今。1 秒ごとに目盛り）
-    {
-        const float step = band.getWidth() / voiceSteps;
-        g.setColour (kVoiceColour.withAlpha (0.85f));
-        for (int i = 0; i < voiceSteps; ++i)
-            if (voiceHistory[static_cast<size_t> ((voicePos + i) % voiceSteps)])
-                g.fillRect (band.getX() + step * static_cast<float> (i), band.getY() + 3, step + 0.5f, band.getHeight() - 5);
-        g.setColour (juce::Colours::white.withAlpha (0.15f));
-        for (int s = 1; s < voiceSteps / 30; ++s)
-            g.drawVerticalLine (static_cast<int> (band.getRight() - step * 30.0f * static_cast<float> (s)), band.getY() + 3, band.getBottom() - 2);
-    }
     g.setFont (juce::FontOptions (17.0f));
+    const auto p = processor.currentParams();
+    auto& m = processor.meters();
+    const bool showGain = ! p.on (vcab::P::bypass); // バイパスのときは抑制していないので、抑制量は出さない
+    drawGrid (g, area);
+    drawNotchBands (g, area);
+    drawSpectrum (g, area, input, kInputColour);
+    drawSpectrum (g, area, output, kOutputColour);
+    if (showGain)
+        drawGainCurve (g, area);
+    if (p.on (vcab::P::showNoiseEstimate) && m.noiseCurveValid.load())
+        drawNoiseEstimate (g, area, p.learnedMode());
+    drawNotchMarkers (g, area);
+    drawLegend (g, area, showGain);
+    if (m.learning.load())
+        drawLearning (g, area);
+}
 
-    // 目盛り
+void MonitorView::drawVoiceBand (juce::Graphics& g, juce::Rectangle<float> band) const
+{
+    // 声の帯（右の端が今。1 秒ごとに目盛り）
+    const float step = band.getWidth() / voiceSteps;
+    g.setColour (kVoiceColour.withAlpha (0.85f));
+    for (int i = 0; i < voiceSteps; ++i)
+        if (voiceHistory[static_cast<size_t> ((voicePos + i) % voiceSteps)])
+            g.fillRect (band.getX() + step * static_cast<float> (i), band.getY() + 3, step + 0.5f, band.getHeight() - 5);
+    g.setColour (juce::Colours::white.withAlpha (0.15f));
+    for (int s = 1; s < voiceSteps / 30; ++s)
+        g.drawVerticalLine (static_cast<int> (band.getRight() - step * 30.0f * static_cast<float> (s)), band.getY() + 3, band.getBottom() - 2);
+}
+
+void MonitorView::drawGrid (juce::Graphics& g, juce::Rectangle<float> area) const
+{
     for (float hz : { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f })
     {
         const float x = xForHz (hz, area);
@@ -122,106 +142,105 @@ void MonitorView::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (0.35f));
         g.drawText (juce::String (static_cast<int> (db)), juce::Rectangle<float> (area.getX() + 2, y - 20, 44, 20), juce::Justification::left);
     }
+}
 
+void MonitorView::drawNotchBands (juce::Graphics& g, juce::Rectangle<float> area) const
+{
     // 抑制している狭帯域ノイズの谷の幅（半値幅）を、薄い帯で出す（スペクトルの線の後ろ）。深く抑制しているほど濃くする
-    {
-        auto& m = processor.meters();
-        const int count = m.notchCount.load();
-        for (int i = 0; i < count; ++i)
-        {
-            const auto k = static_cast<size_t> (i);
-            const float hz = m.notchHz[k].load(), half = 0.5f * m.notchWidthHz[k].load();
-            float x0 = xForHz (std::max (minHz, hz - half), area), x1 = xForHz (hz + half, area);
-            if (x1 - x0 < 2.0f) // 細すぎて見えないときは 2 ピクセルにする
-            {
-                const float x = xForHz (hz, area);
-                x0 = x - 1.0f;
-                x1 = x + 1.0f;
-            }
-            const float depth = juce::jlimit (0.0f, 1.0f, m.notchDepthDb[k].load() / kNotchFullDepthDb);
-            g.setColour (kNotchColour.withAlpha (0.08f + 0.17f * depth));
-            g.fillRect (juce::Rectangle<float> (x0, area.getY(), x1 - x0, area.getHeight()));
-        }
-    }
-
-    const double sr = processor.currentSampleRate.load();
-    auto drawCurve = [&] (const Channel& ch, juce::Colour colour)
-    {
-        juce::Path path;
-        const int w = static_cast<int> (area.getWidth());
-        for (int px = 0; px < w; px += 2)
-        {
-            const float t = static_cast<float> (px) / static_cast<float> (w);
-            const float hz = minHz * std::pow (maxHz / minHz, t);
-            const int bin = juce::jlimit (1, fftSize / 2, static_cast<int> (hz / sr * fftSize + 0.5));
-            const float y = yForDb (ch.spectrumDb[static_cast<size_t> (bin)], area);
-            const float x = area.getX() + static_cast<float> (px);
-            if (px == 0) path.startNewSubPath (x, y);
-            else path.lineTo (x, y);
-        }
-        g.setColour (colour);
-        g.strokePath (path, juce::PathStrokeType (1.5f));
-    };
-    drawCurve (input, kInputColour);
-    drawCurve (output, kOutputColour);
-
-    const auto p = processor.currentParams();
     auto& m = processor.meters();
-
-    // 抑制量（薄い赤の塗り）: グラフの上の端（0dB）から、下げている量だけ下へ垂らす。目盛りはスペクトルと同じ（入力と出力の差と比べられる）。
-    // バイパスのときは抑制していないので出さない
-    const bool showGain = ! p.on (vcab::P::bypass);
-    if (showGain)
+    const int count = m.notchCount.load();
+    for (int i = 0; i < count; ++i)
     {
-        juce::Path fill;
-        fill.startNewSubPath (xForHz (vcab::EngineMeters::noiseCurveHz (0), area), area.getY());
-        juce::Path line;
-        for (int i = 0; i < vcab::EngineMeters::kNoiseCurvePoints; ++i)
+        const auto k = static_cast<size_t> (i);
+        const float hz = m.notchHz[k].load(), half = 0.5f * m.notchWidthHz[k].load();
+        float x0 = xForHz (std::max (minHz, hz - half), area), x1 = xForHz (hz + half, area);
+        if (x1 - x0 < 2.0f) // 細すぎて見えないときは 2 ピクセルにする
         {
-            const float x = xForHz (vcab::EngineMeters::noiseCurveHz (i), area);
-            const float y = yForDb (maxDb + std::max (m.gainCurveDb[static_cast<size_t> (i)].load(), minDb - maxDb), area);
-            fill.lineTo (x, y);
-            if (i == 0) line.startNewSubPath (x, y);
-            else line.lineTo (x, y);
+            const float x = xForHz (hz, area);
+            x0 = x - 1.0f;
+            x1 = x + 1.0f;
         }
-        fill.lineTo (area.getRight(), area.getY());
-        fill.closeSubPath();
-        g.setColour (kGainColour.withAlpha (0.16f));
-        g.fillPath (fill);
-        g.setColour (kGainColour.withAlpha (0.75f));
-        g.strokePath (line, juce::PathStrokeType (1.5f));
+        const float depth = juce::jlimit (0.0f, 1.0f, m.notchDepthDb[k].load() / kNotchFullDepthDb);
+        g.setColour (kNotchColour.withAlpha (0.08f + 0.17f * depth));
+        g.fillRect (juce::Rectangle<float> (x0, area.getY(), x1 - x0, area.getHeight()));
     }
+}
 
+void MonitorView::drawSpectrum (juce::Graphics& g, juce::Rectangle<float> area, const Channel& ch, juce::Colour colour) const
+{
+    const double sr = processor.currentSampleRate.load();
+    juce::Path path;
+    const int w = static_cast<int> (area.getWidth());
+    for (int px = 0; px < w; px += 2)
+    {
+        const float t = static_cast<float> (px) / static_cast<float> (w);
+        const float hz = minHz * std::pow (maxHz / minHz, t);
+        const int bin = juce::jlimit (1, fftSize / 2, static_cast<int> (hz / sr * fftSize + 0.5));
+        const float y = yForDb (ch.spectrumDb[static_cast<size_t> (bin)], area);
+        const float x = area.getX() + static_cast<float> (px);
+        if (px == 0) path.startNewSubPath (x, y);
+        else path.lineTo (x, y);
+    }
+    g.setColour (colour);
+    g.strokePath (path, juce::PathStrokeType (1.5f));
+}
+
+void MonitorView::drawGainCurve (juce::Graphics& g, juce::Rectangle<float> area) const
+{
+    // 抑制量（薄い赤の塗り）: グラフの上の端（0dB）から、下げている量だけ下へ垂らす。目盛りはスペクトルと同じ（入力と出力の差と比べられる）
+    auto& m = processor.meters();
+    juce::Path fill;
+    fill.startNewSubPath (xForHz (vcab::EngineMeters::noiseCurveHz (0), area), area.getY());
+    juce::Path line;
+    for (int i = 0; i < vcab::EngineMeters::kNoiseCurvePoints; ++i)
+    {
+        const float x = xForHz (vcab::EngineMeters::noiseCurveHz (i), area);
+        const float y = yForDb (maxDb + std::max (m.gainCurveDb[static_cast<size_t> (i)].load(), minDb - maxDb), area);
+        fill.lineTo (x, y);
+        if (i == 0) line.startNewSubPath (x, y);
+        else line.lineTo (x, y);
+    }
+    fill.lineTo (area.getRight(), area.getY());
+    fill.closeSubPath();
+    g.setColour (kGainColour.withAlpha (0.16f));
+    g.fillPath (fill);
+    g.setColour (kGainColour.withAlpha (0.75f));
+    g.strokePath (line, juce::PathStrokeType (1.5f));
+}
+
+void MonitorView::drawNoiseEstimate (juce::Graphics& g, juce::Rectangle<float> area, bool learnedMode) const
+{
     // ノイズ推定（緑の点線）。見積もりは「白色雑音に直したときの 1 サンプルあたりの 2 乗」なので、
     // この表示（ハン窓の fftSize 点、大きさ × 4 / fftSize）に直す: 白色雑音の分散 σ² は 10log10(σ² × 6 / fftSize) dB になる。
     // 表示のスペクトルは dB でならしているので、ノイズは 2 乗の平均より約 2.5dB 低く見える。その分も引く（VoiChanAlgoBox と同じ）
-    if (p.on (vcab::P::showNoiseEstimate) && m.noiseCurveValid.load())
+    auto& m = processor.meters();
+    const float offset = 10.0f * std::log10 (6.0f / fftSize) - 2.5f;
+    juce::Path path;
+    for (int i = 0; i < vcab::EngineMeters::kNoiseCurvePoints; ++i)
     {
-        const float offset = 10.0f * std::log10 (6.0f / fftSize) - 2.5f;
-        juce::Path path;
-        for (int i = 0; i < vcab::EngineMeters::kNoiseCurvePoints; ++i)
-        {
-            const float x = xForHz (vcab::EngineMeters::noiseCurveHz (i), area);
-            const float y = yForDb (m.noiseCurveDb[static_cast<size_t> (i)].load() + offset, area);
-            if (i == 0) path.startNewSubPath (x, y);
-            else path.lineTo (x, y);
-        }
-        // 自動追従のとき、声ありの間は推定を止めているので、線をグレーにする
-        // 学習固定でも、まだ学習していないときは自動追従の値で抑制している
-        const bool learnedMode = static_cast<vcab::NoiseMode> (p.index (vcab::P::noiseMode)) == vcab::NoiseMode::learned;
-        const bool learned = learnedMode && m.learned.load();
-        const bool paused = ! learned && m.voice.load();
-        juce::Path dashed;
-        const float dashes[] = { 6.0f, 4.0f };
-        juce::PathStrokeType (2.0f).createDashedStroke (dashed, path, dashes, 2);
-        g.setColour (paused ? kPausedColour : kNoiseColour);
-        g.fillPath (dashed);
-        const char* title = learned ? "ノイズ推定（学習固定）" : learnedMode ? "ノイズ推定（未学習のため自動追従）" : "ノイズ推定（自動追従）";
-        g.drawText (utf8 (title), juce::Rectangle<float> (area.getX() + 92, area.getY() + 3, 280, 20), juce::Justification::left);
+        const float x = xForHz (vcab::EngineMeters::noiseCurveHz (i), area);
+        const float y = yForDb (m.noiseCurveDb[static_cast<size_t> (i)].load() + offset, area);
+        if (i == 0) path.startNewSubPath (x, y);
+        else path.lineTo (x, y);
     }
+    // 自動追従のとき、声ありの間は推定を止めているので、線をグレーにする
+    // 学習固定でも、まだ学習していないときは自動追従の値で抑制している
+    const bool learned = learnedMode && m.learned.load();
+    const bool paused = ! learned && m.voice.load();
+    juce::Path dashed;
+    const float dashes[] = { 6.0f, 4.0f };
+    juce::PathStrokeType (2.0f).createDashedStroke (dashed, path, dashes, 2);
+    g.setColour (paused ? kPausedColour : kNoiseColour);
+    g.fillPath (dashed);
+    const char* title = learned ? "ノイズ推定（学習固定）" : learnedMode ? "ノイズ推定（未学習のため自動追従）" : "ノイズ推定（自動追従）";
+    g.drawText (utf8 (title), juce::Rectangle<float> (area.getX() + 92, area.getY() + 3, 280, 20), juce::Justification::left);
+}
 
+void MonitorView::drawNotchMarkers (juce::Graphics& g, juce::Rectangle<float> area) const
+{
     // 抑制している狭帯域ノイズ（▼ と周波数）。凡例の下の段に出す。周波数の文字は ▼ の右に書き、
     // 次の ▼ や前の文字と重なるときは省く（近い音が並ぶときは、いちばん右の音にだけ書く）
+    auto& m = processor.meters();
     g.setColour (kNotchColour);
     const int count = m.notchCount.load();
     std::array<float, vcab::TonalTracker::kMaxNotches> xs {};
@@ -249,8 +268,11 @@ void MonitorView::paint (juce::Graphics& g)
             textEnd = x + 8 + w;
         }
     }
+}
 
-    // 凡例（左から 狭帯域ノイズ・ノイズ推定、真ん中に 入力・出力、右に 声あり判定）
+void MonitorView::drawLegend (juce::Graphics& g, juce::Rectangle<float> area, bool showGain) const
+{
+    // 凡例（左から 狭帯域ノイズ・ノイズ推定、真ん中に 入力・出力、右に 抑制量・声あり判定）
     const float cx = area.getCentreX();
     g.setColour (kInputColour);
     g.drawText (utf8 ("入力"), juce::Rectangle<float> (cx - 58, area.getY() + 3, 54, 20), juce::Justification::right);
@@ -265,20 +287,20 @@ void MonitorView::paint (juce::Graphics& g)
     }
     g.setColour (kVoiceColour);
     g.drawText (utf8 ("声あり判定"), juce::Rectangle<float> (area.getRight() - 128, area.getY() + 3, 120, 20), juce::Justification::right);
+}
 
+void MonitorView::drawLearning (juce::Graphics& g, juce::Rectangle<float> area) const
+{
     // 学習中は、グラフの真ん中に大きく出す（学習の間は静かにしていてほしいので、見落とさないように）
-    if (m.learning.load())
-    {
-        const auto box = area.withSizeKeepingCentre (320, 96);
-        g.setColour (kGraph.withAlpha (0.85f));
-        g.fillRoundedRectangle (box, 8.0f);
-        g.setColour (kNoiseColour);
-        g.drawRoundedRectangle (box, 8.0f, 1.5f);
-        auto inner = box.reduced (8, 10);
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
-        g.drawText (utf8 ("学習中"), inner.removeFromTop (inner.getHeight() * 0.55f), juce::Justification::centred);
-        g.setFont (juce::FontOptions (20.0f));
-        g.drawText (utf8 ("お静かに……"), inner, juce::Justification::centred);
-    }
+    const auto box = area.withSizeKeepingCentre (320, 96);
+    g.setColour (kGraph.withAlpha (0.85f));
+    g.fillRoundedRectangle (box, 8.0f);
+    g.setColour (kNoiseColour);
+    g.drawRoundedRectangle (box, 8.0f, 1.5f);
+    auto inner = box.reduced (8, 10);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
+    g.drawText (utf8 ("学習中"), inner.removeFromTop (inner.getHeight() * 0.55f), juce::Justification::centred);
+    g.setFont (juce::FontOptions (20.0f));
+    g.drawText (utf8 ("お静かに……"), inner, juce::Justification::centred);
 }

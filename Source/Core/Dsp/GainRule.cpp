@@ -81,9 +81,8 @@ void GainRule::prepare (int fftSize, double sampleRate, int hopSize)
     }
     lg.assign (b, 0.0);
     mixWork.assign (b, 0.0);
-    work.assign (b + 1, 0.0);
+    prefix.assign (b + 1, 0.0);
     makeErbRanges (1.0, erbLo, erbHi);
-    logWork.assign (b + 1, 0.0);
     // 帯域でまとめるときの、帯域の中心（区画の位置）: 0Hz から、約 2 ERB ごと（2 区画以上空ける）。最後はナイキスト周波数
     std::vector<double> centers { 0.0 };
     for (;;)
@@ -220,13 +219,13 @@ void GainRule::applyPresence (Track& t, double lnFloor, int n, int localHalf, in
     // 音声存在確率を 0〜1 にし、その積から決める（Cohen・Berdugo 2001）。G^p × 下限^(1−p) は、対数では p ln G + (1 − p) ln 下限
     for (int k = 0; k < n; ++k)
         zeta[static_cast<size_t> (k)] = static_cast<float> (zetaAlpha * zeta[static_cast<size_t> (k)] + (1.0 - zetaAlpha) * xiNow[static_cast<size_t> (k)]);
-    work[0] = 0;
+    prefix[0] = 0;
     for (int k = 0; k < n; ++k)
-        work[static_cast<size_t> (k + 1)] = work[static_cast<size_t> (k)] + zeta[static_cast<size_t> (k)];
+        prefix[static_cast<size_t> (k + 1)] = prefix[static_cast<size_t> (k)] + zeta[static_cast<size_t> (k)];
     auto average = [&] (int k, int half)
     {
         const int lo = std::max (0, k - half), hi = std::min (n - 1, k + half);
-        return (work[static_cast<size_t> (hi + 1)] - work[static_cast<size_t> (lo)]) / (hi - lo + 1);
+        return (prefix[static_cast<size_t> (hi + 1)] - prefix[static_cast<size_t> (lo)]) / (hi - lo + 1);
     };
     static constexpr double zetaMin = 0.1, zetaMax = 0.316; // −10dB、−5dB
     const double lnRange = std::log (zetaMax / zetaMin);
@@ -236,7 +235,7 @@ void GainRule::applyPresence (Track& t, double lnFloor, int n, int localHalf, in
         if (z >= zetaMax) return 1.0;
         return std::log (z / zetaMin) / lnRange;
     };
-    const double pFrame = likelihood (work[static_cast<size_t> (n)] / n);
+    const double pFrame = likelihood (prefix[static_cast<size_t> (n)] / n);
     for (int k = 0; k < n; ++k)
     {
         const auto i = static_cast<size_t> (k);
@@ -300,14 +299,14 @@ void GainRule::smoothTime (Track& t, const GainSettings& s, int n)
 
 void GainRule::boxcar (const std::vector<int>& lowEdge, const std::vector<int>& highEdge)
 {
-    logWork[0] = 0;
+    prefix[0] = 0;
     for (int k = 0; k < bins; ++k)
-        logWork[static_cast<size_t> (k + 1)] = logWork[static_cast<size_t> (k)] + lg[static_cast<size_t> (k)];
+        prefix[static_cast<size_t> (k + 1)] = prefix[static_cast<size_t> (k)] + lg[static_cast<size_t> (k)];
     for (int k = 0; k < bins; ++k)
     {
         const int lo = lowEdge[static_cast<size_t> (k)], hi = highEdge[static_cast<size_t> (k)];
         if (hi > lo)
-            lg[static_cast<size_t> (k)] = (logWork[static_cast<size_t> (hi + 1)] - logWork[static_cast<size_t> (lo)]) / (hi - lo + 1);
+            lg[static_cast<size_t> (k)] = (prefix[static_cast<size_t> (hi + 1)] - prefix[static_cast<size_t> (lo)]) / (hi - lo + 1);
     }
 }
 

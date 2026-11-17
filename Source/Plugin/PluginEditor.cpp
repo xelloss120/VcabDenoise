@@ -385,7 +385,7 @@ void VcabDenoiseEditor::updateStatus()
         learnButton.setButtonText (utf8 (learning ? "学習終了" : "学習開始"));
         learnButton.setColour (juce::TextButton::buttonColourId, learning ? juce::Colour (0xff803030) : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
     }
-    const bool learnedMode = static_cast<vcab::NoiseMode> (p.index (P::noiseMode)) == vcab::NoiseMode::learned;
+    const bool learnedMode = p.learnedMode();
     juce::String text;
     if (learning)
         text = utf8 ("学習中");

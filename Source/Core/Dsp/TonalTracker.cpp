@@ -188,6 +188,9 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
         }
         if (best >= 0)
         {
+            // 1 つの山に当てはめるのは、1 フレームに 1 つの候補だけ（近くに山が 2 つ見えたとき、居続けた時間を 2 回数えないように）
+            if (matched[static_cast<size_t> (best)])
+                continue;
             auto& t = tracks[static_cast<size_t> (best)];
             // 声の倍音と重なった候補でも、もう削っている山なら追いかけ続ける
             if (c.harmonic && ! t.active)
@@ -297,16 +300,26 @@ void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
 
 int TonalTracker::notches (Notch* out, const TonalSettings& s) const
 {
+    std::array<Notch, kMaxTracks> all {};
     int count = 0;
     for (const auto& t : tracks)
     {
-        if (! t.used || t.fade <= 0.0 || count >= kMaxNotches)
+        if (! t.used || t.fade <= 0.0)
             continue;
         const double depth = std::min (t.prominence, s.maxDepthDb) * t.fade;
         if (depth <= 0.01)
             continue;
-        out[count++] = { static_cast<float> (t.freq), static_cast<float> (depth), static_cast<float> (widthFor (t.freq)) };
+        all[static_cast<size_t> (count++)] = { static_cast<float> (t.freq), static_cast<float> (depth), static_cast<float> (widthFor (t.freq)) };
     }
+    // 外している途中の谷が重なって上限を超えたときは、深い順に残す（追いかけている順に切ると、削っている最中の深い谷が落ちることがある）。
+    // 超えないときは、並びを変えない
+    if (count > kMaxNotches)
+    {
+        std::partial_sort (all.begin(), all.begin() + kMaxNotches, all.begin() + count,
+                           [] (const Notch& a, const Notch& b) { return a.depthDb > b.depthDb; });
+        count = kMaxNotches;
+    }
+    std::copy (all.begin(), all.begin() + count, out);
     return count;
 }
 

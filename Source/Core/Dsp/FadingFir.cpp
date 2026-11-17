@@ -1,6 +1,7 @@
 #include "FadingFir.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 
 namespace vcab
@@ -8,23 +9,29 @@ namespace vcab
 
 void FadingFir::prepare (int taps, int blockSize, int fade)
 {
+    // setFilter は length 個を読むので、taps は block の倍数にする（切り上げると、渡された配列の外を読む）
+    assert (taps >= blockSize && taps % blockSize == 0);
     block = blockSize;
     length = std::max (block, (taps + block - 1) / block * block);
     parts = length / block - 1;
     fadeLength = std::max (1, fade);
     fft.prepare (2 * block);
-    const auto bins = static_cast<size_t> (block + 1);
-    fdl.assign (static_cast<size_t> (parts + 1), std::vector<Fft::Complex> (bins));
+    const auto fftSize = static_cast<size_t> (2 * block);
+    fdl.clear();
+    fdl.resize (static_cast<size_t> (parts + 1));
+    for (auto& x : fdl)
+        x.assign (fftSize);
     hist.assign (static_cast<size_t> (2 * block), 0.0f);
     blockIn.assign (static_cast<size_t> (block), 0.0f);
-    acc.assign (bins, {});
-    pad.assign (static_cast<size_t> (2 * block), 0.0);
-    sumNow.assign (static_cast<size_t> (2 * block), 0.0);
-    sumPrev.assign (static_cast<size_t> (2 * block), 0.0);
+    for (auto* b : { &acc, &pad, &sumNow, &sumPrev })
+        b->assign (fftSize);
     for (auto& s : slots)
     {
         s.head.assign (static_cast<size_t> (block), 0.0f);
-        s.tail.assign (static_cast<size_t> (parts), std::vector<Fft::Complex> (bins));
+        s.tail.clear();
+        s.tail.resize (static_cast<size_t> (parts));
+        for (auto& g : s.tail)
+            g.assign (fftSize);
         s.outCur.assign (static_cast<size_t> (block), 0.0f);
         s.overlap.assign (static_cast<size_t> (block), 0.0f);
     }
@@ -35,7 +42,7 @@ void FadingFir::prepare (int taps, int blockSize, int fade)
 void FadingFir::reset()
 {
     for (auto& x : fdl)
-        std::fill (x.begin(), x.end(), Fft::Complex {});
+        x.clear();
     std::fill (hist.begin(), hist.end(), 0.0f);
     std::fill (blockIn.begin(), blockIn.end(), 0.0f);
     pos = histPos = fdlNewest = fadeLeft = 0;
@@ -92,8 +99,8 @@ void FadingFir::load (int slotIndex, const float* h)
     {
         for (int i = 0; i < block; ++i)
             pad[static_cast<size_t> (i)] = h[(j + 1) * block + i];
-        std::fill (pad.begin() + block, pad.end(), 0.0);
-        fft.forward (pad.data(), s.tail[static_cast<size_t> (j)].data());
+        std::fill (pad.get() + block, pad.get() + 2 * block, 0.0f);
+        fft.forwardRaw (pad.get(), s.tail[static_cast<size_t> (j)].get());
     }
 
     // 過去の入力に新しいフィルタをかけた尾の分（次の塊で出す分と、その次へ持ち越す後半）
@@ -104,30 +111,22 @@ void FadingFir::load (int slotIndex, const float* h)
         tailSum (s, older, sumPrev);
         for (int i = 0; i < block; ++i)
         {
-            s.outCur[static_cast<size_t> (i)] = static_cast<float> (sumNow[static_cast<size_t> (i)] + sumPrev[static_cast<size_t> (i + block)]);
-            s.overlap[static_cast<size_t> (i)] = static_cast<float> (sumNow[static_cast<size_t> (i + block)]);
+            s.outCur[static_cast<size_t> (i)] = sumNow[static_cast<size_t> (i)] + sumPrev[static_cast<size_t> (i + block)];
+            s.overlap[static_cast<size_t> (i)] = sumNow[static_cast<size_t> (i + block)];
         }
     }
 }
 
-void FadingFir::tailSum (const Slot& s, int newest, std::vector<double>& out)
+void FadingFir::tailSum (const Slot& s, int newest, AlignedFloats& out)
 {
-    std::fill (acc.begin(), acc.end(), Fft::Complex {});
-    const int bins = block + 1;
+    acc.clear();
+    const float scale = 1.0f / static_cast<float> (2 * block); // 逆 FFT の 1/N を、ここでかけておく
     for (int j = 1; j <= parts; ++j)
     {
-        const auto* x = fdl[static_cast<size_t> (((newest - (j - 1)) % (parts + 1) + (parts + 1)) % (parts + 1))].data();
-        const auto* g = s.tail[static_cast<size_t> (j - 1)].data();
-        auto* a = acc.data();
-        for (int i = 0; i < bins; ++i)
-        {
-            // 複素数の掛け算を展開して書く（Fft.h と同じ理由）
-            const double re = x[i].real() * g[i].real() - x[i].imag() * g[i].imag();
-            const double im = x[i].real() * g[i].imag() + x[i].imag() * g[i].real();
-            a[i] = { a[i].real() + re, a[i].imag() + im };
-        }
+        const auto& x = fdl[static_cast<size_t> (((newest - (j - 1)) % (parts + 1) + (parts + 1)) % (parts + 1))];
+        fft.multiplyAdd (x.get(), s.tail[static_cast<size_t> (j - 1)].get(), acc.get(), scale);
     }
-    fft.inverse (acc.data(), out.data());
+    fft.inverseRaw (acc.get(), out.get());
 }
 
 float FadingFir::headAt (const Slot& s) const noexcept
@@ -189,8 +188,8 @@ void FadingFir::endBlock()
     fdlNewest = (fdlNewest + 1) % (parts + 1);
     for (int i = 0; i < block; ++i)
         pad[static_cast<size_t> (i)] = blockIn[static_cast<size_t> (i)];
-    std::fill (pad.begin() + block, pad.end(), 0.0);
-    fft.forward (pad.data(), fdl[static_cast<size_t> (fdlNewest)].data());
+    std::fill (pad.get() + block, pad.get() + 2 * block, 0.0f);
+    fft.forwardRaw (pad.get(), fdl[static_cast<size_t> (fdlNewest)].get());
 
     for (auto& s : slots)
     {
@@ -199,8 +198,8 @@ void FadingFir::endBlock()
         tailSum (s, fdlNewest, sumNow);
         for (int i = 0; i < block; ++i)
         {
-            s.outCur[static_cast<size_t> (i)] = static_cast<float> (sumNow[static_cast<size_t> (i)]) + s.overlap[static_cast<size_t> (i)];
-            s.overlap[static_cast<size_t> (i)] = static_cast<float> (sumNow[static_cast<size_t> (i + block)]);
+            s.outCur[static_cast<size_t> (i)] = sumNow[static_cast<size_t> (i)] + s.overlap[static_cast<size_t> (i)];
+            s.overlap[static_cast<size_t> (i)] = sumNow[static_cast<size_t> (i + block)];
         }
     }
 }

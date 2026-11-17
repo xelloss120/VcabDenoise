@@ -1,6 +1,7 @@
 # 評価で使う、入力の音の作り方と vcabdn_render の呼び出し（VoiChanAlgoBox の signals.py から、使う部分を移したもの）
 import os
 import subprocess
+import sys
 
 import numpy as np
 from scipy.io import wavfile
@@ -55,3 +56,22 @@ def tts_speech():
     x *= 0.3 / np.max(np.abs(x))
     e = np.convolve(x ** 2, np.ones(480) / 480, 'same')
     return x, e > np.max(e) * 10 ** (-45 / 10)
+
+
+def pop_option(args, name, default):
+    """args から「name 値」の組を取り除いて、値を返す（なければ default）"""
+    if name not in args:
+        return default
+    i = args.index(name)
+    value = args[i + 1]
+    del args[i:i + 2]
+    return value
+
+
+def run_eval(evaluate, default_level):
+    """評価のスクリプトの共通の引数（設定の並び、--kind、--level）を読んで、evaluate を呼ぶ"""
+    args = sys.argv[1:]
+    kind = pop_option(args, '--kind', 'pink')
+    level = float(pop_option(args, '--level', default_level))
+    sets = [a for a in args if '=' in a]
+    evaluate(sets, ' '.join(sets) or '初期値', kind=kind, noise_db=level)

@@ -94,6 +94,7 @@ struct ParamValues
     void set (P id, float value) noexcept { v[static_cast<size_t> (id)] = value; }
     bool on (P id) const noexcept { return get (id) >= 0.5f; }
     int index (P id) const noexcept { return static_cast<int> (get (id) + 0.5f); }
+    bool learnedMode() const noexcept { return static_cast<NoiseMode> (index (P::noiseMode)) == NoiseMode::learned; } // ノイズ推定が「学習固定」
 };
 
 } // namespace vcab

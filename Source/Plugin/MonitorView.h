@@ -40,6 +40,16 @@ private:
     void computeFrame (Channel& ch);
     float xForHz (float hz, juce::Rectangle<float> area) const;
     float yForDb (float db, juce::Rectangle<float> area) const;
+    // paint の部品（描く順に）
+    void drawVoiceBand (juce::Graphics&, juce::Rectangle<float> band) const;
+    void drawGrid (juce::Graphics&, juce::Rectangle<float> area) const;
+    void drawNotchBands (juce::Graphics&, juce::Rectangle<float> area) const;
+    void drawSpectrum (juce::Graphics&, juce::Rectangle<float> area, const Channel& ch, juce::Colour colour) const;
+    void drawGainCurve (juce::Graphics&, juce::Rectangle<float> area) const;
+    void drawNoiseEstimate (juce::Graphics&, juce::Rectangle<float> area, bool learnedMode) const;
+    void drawNotchMarkers (juce::Graphics&, juce::Rectangle<float> area) const;
+    void drawLegend (juce::Graphics&, juce::Rectangle<float> area, bool showGain) const;
+    void drawLearning (juce::Graphics&, juce::Rectangle<float> area) const;
 
     VcabDenoiseProcessor& processor;
     juce::dsp::FFT fft { fftOrder };

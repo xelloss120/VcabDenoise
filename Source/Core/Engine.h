@@ -74,6 +74,7 @@ public:
     void requestClearLearned() noexcept { learnRequest.store (LearnRequest::clear); }
 
     // 学習した値の書き出しと読み込み（保存のため）。形式: 版（1）、点の数、（周波数 Hz、白色雑音に直した大きさ dB）× 点の数
+    // 空や読めない曲線を読み込むと、覚えた値を消す（学習した値のない設定を読み込んだとき、前の値が残らないように）
     std::vector<float> exportLearned();
     void importLearned (std::vector<float> curve);
 
@@ -109,17 +110,20 @@ private:
         NoiseEstimator noise;
         GainRule rule;
         FirPath path;
-        std::vector<float> gainDb;  // 区画ごとの残す割合（dB、0 以下）
+        bool lowSide = false;       // 中くらいの側（500Hz より下を受け持つ）
+        std::vector<float> gainDb; // 区画ごとの残す割合（dB、0 以下）
         std::vector<double> weight; // 設計の区画ごとの、この段が受け持つ割合（クロスオーバー）
     };
 
     void prepareStage (Stage& st, int size, bool lowSide);
+    void calibrateNoise(); // ノイズ推定の最小値の倍率を、白色雑音で測る（prepare の中で）
     void stopBroadband();
     void onBroadbandFrame (Stage& st, const ParamValues& p, bool useLearned);
     void onTonalFrame (const ParamValues& p);
     void updateMonitor();
     void updateNoiseCurve (bool useLearned);
     void updateGainCurve();
+    void updateLevelMeters (int n, double sumIn, double sumOut);
     void handleRequests();
     void storeLearnedCurve();
     void applyLearnedCurve (const std::vector<float>& curve);
@@ -157,7 +161,6 @@ private:
 
     // 学習
     std::atomic<LearnRequest> learnRequest { LearnRequest::none };
-    bool wasLearning = false;
     std::mutex curveMutex;          // learnedCurve（音の処理のスレッドは try_lock だけ）
     std::vector<float> learnedCurve; // 最後に覚えた値（周波数の曲線）。サンプルレートが変わっても使えるように、この形で持つ
     std::vector<float> curveScratch; // 音の処理のスレッドで曲線を作る場所（learnedCurve と入れ替える。prepare で大きさを確保しておく）

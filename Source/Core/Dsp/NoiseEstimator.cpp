@@ -46,7 +46,6 @@ void NoiseEstimator::reset()
     std::fill (autoMin.begin(), autoMin.end(), 0.0f); // 最初の見積もりができるまでは下げない
     vadPos = vadFilled = vadUpdates = vadSinceUpdate = 0;
     std::fill (vadEst.begin(), vadEst.end(), 0.0f);
-    learnActive = false;
 }
 
 void NoiseEstimator::trackMinimum (const float* power)
@@ -101,10 +100,12 @@ void NoiseEstimator::push (const float* power, int voiceQuiet)
                     ak *= 0.02;
                 vadEst[i] += static_cast<float> (ak) * (slot[i] - vadEst[i]);
             }
-            ++vadUpdates;
+            // 数は上限で止める（毎秒 375 回なので、止めないと 2 か月ほど動かし続けたときに int があふれる。
+            // 上限は、最初の平均（1 / (数 + 1)）がとうに 0.4 秒のならしに替わっている大きさ）
+            vadUpdates = std::min (vadUpdates + 1, kCountLimit);
             vadSinceUpdate = 0;
         }
-        else if (vadUpdates > 0 && ++vadSinceUpdate > vadStuckFrames)
+        else if (vadUpdates > 0 && (vadSinceUpdate = std::min (vadSinceUpdate + 1, kCountLimit)) > vadStuckFrames)
         {
             // 長く「声あり」が続くときは、最小値の見積もりの方が小さい区画だけ、そちらへゆっくり下げる
             for (int k = 0; k < channels; ++k)

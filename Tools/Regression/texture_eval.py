@@ -5,7 +5,6 @@
 # 粒: ノイズだけを通し、残ったノイズの区画ごとの大きさの尖度を、入力のノイズの尖度で割った値（log10）。
 #     区画ごとに時間の平均で割ってから全体の尖度を求める（ノイズの周波数の形に左右されないように）。0 なら粒が増えていない。
 # 上下: 声＋ノイズを通し、区画ごとの「出力 ÷ 入力」（dB）の、5.3ms ごとの変化の絶対値の平均。
-import sys
 
 import numpy as np
 from scipy.signal import stft
@@ -56,13 +55,4 @@ def evaluate(sets, label='', kind='pink', noise_db=-45):
 
 
 if __name__ == '__main__':
-    args = sys.argv[1:]
-    kind, level = 'pink', -45.0
-    if '--kind' in args:
-        kind = args[args.index('--kind') + 1]
-        del args[args.index('--kind'):args.index('--kind') + 2]
-    if '--level' in args:
-        level = float(args[args.index('--level') + 1])
-        del args[args.index('--level'):args.index('--level') + 2]
-    sets = [a for a in args if '=' in a]
-    evaluate(sets, ' '.join(sets) or '初期値', kind=kind, noise_db=level)
+    sg.run_eval(evaluate, default_level=-45.0)

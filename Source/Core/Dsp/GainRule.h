@@ -67,10 +67,10 @@ private:
     double hopSeconds = 0.0027, binHz = 93.75;
     double ddAlpha = 0.98, zetaAlpha = 0.7;
     Track binTrack, bandTrack;
-    std::vector<double> lg, work, mixWork;
+    std::vector<double> lg, mixWork;
+    std::vector<double> prefix; // 累積和（範囲の平均を求めるための作業用。音声存在確率と boxcar で使う）
     // ERB でならす範囲（区画ごとの、前後の端）
     std::vector<int> erbLo, erbHi;
-    std::vector<double> logWork;
     // 帯域でまとめるとき: 区画 k は、帯域 bandLo[k] と bandLo[k] + 1 の中心の間にあり、重みは 1 − bandT[k] と bandT[k]
     int numBands = 0;
     std::vector<int> bandLo;

@@ -71,6 +71,7 @@ VcabDenoiseProcessor::VcabDenoiseProcessor()
 {
     for (const auto& s : vcab::paramSpecs())
         raw[static_cast<size_t> (s.id)] = apvts.getRawParameterValue (s.key);
+    bypassParam = apvts.getParameter (vcab::spec (vcab::P::bypass).key);
 }
 
 bool VcabDenoiseProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -112,11 +113,22 @@ void VcabDenoiseProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         mono.resize (static_cast<size_t> (n)); // 想定より大きな塊が来たとき（本来は起きない）
 
     const auto params = currentParams();
+    mixToMono (buffer, n, params.index (vcab::P::inputChannel));
 
+    inputAnalysis.push (mono.data(), n);
+    engine.setRealtime (! isNonRealtime()); // ホストが書き出し中なら、声の判定をその場で計算する
+    engine.process (mono.data(), n, params);
+    outputAnalysis.push (mono.data(), n);
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        buffer.copyFrom (ch, 0, mono.data(), n);
+}
+
+void VcabDenoiseProcessor::mixToMono (const juce::AudioBuffer<float>& buffer, int n, int choice)
+{
     // 入力チャンネルを選ぶ（マイクが 2ch 側に入っているオーディオインターフェースもあるため。VoiChanAlgoBox と同じ）
+    // choice: 0 = 自動、1 = 1ch、2 = 2ch、3 = 平均
     const int numIn = getTotalNumInputChannels();
-    int choice = params.index (vcab::P::inputChannel); // 0 = 自動、1 = 1ch、2 = 2ch、3 = 平均
-
     if (choice == 0 && numIn >= 2)
     {
         // 自動: 各チャンネルの音量を約2秒でならし、もう片方が 6dB（4倍の電力）以上大きくなったら切り替える
@@ -153,14 +165,6 @@ void VcabDenoiseProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         for (int i = 0; i < n; ++i)
             mono[static_cast<size_t> (i)] = 0.5f * (l[i] + r[i]);
     }
-
-    inputAnalysis.push (mono.data(), n);
-    engine.setRealtime (! isNonRealtime()); // ホストが書き出し中なら、声の判定をその場で計算する
-    engine.process (mono.data(), n, params);
-    outputAnalysis.push (mono.data(), n);
-
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-        buffer.copyFrom (ch, 0, mono.data(), n);
 }
 
 juce::AudioProcessorEditor* VcabDenoiseProcessor::createEditor()
@@ -198,13 +202,15 @@ void VcabDenoiseProcessor::setStateInformation (const void* data, int sizeInByte
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
         {
+            // 学習した値。入っていない設定を読み込んだときは、空を渡して消す（前に覚えた値が残らないように）
+            std::vector<float> learned;
             juce::MemoryBlock block;
             if (xml->hasAttribute ("learnedNoise") && block.fromBase64Encoding (xml->getStringAttribute ("learnedNoise")))
             {
-                std::vector<float> learned (block.getSize() / sizeof (float));
+                learned.resize (block.getSize() / sizeof (float));
                 std::memcpy (learned.data(), block.getData(), learned.size() * sizeof (float));
-                engine.importLearned (std::move (learned));
             }
+            engine.importLearned (std::move (learned));
             xml->removeAttribute ("learnedNoise"); // 設定値の木には入れない
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
         }
