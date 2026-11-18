@@ -31,7 +31,9 @@ public:
     {
         if (x > -kSilentLevel && x < kSilentLevel)
         {
-            if (++quietRun >= quietLength)
+            if (quietRun < quietLength)
+                ++quietRun; // quietLength で止める（無音が何時間も続いても、あふれないように）
+            if (quietRun >= quietLength)
             {
                 validRun = 0;
                 return;

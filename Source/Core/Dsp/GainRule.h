@@ -30,7 +30,7 @@ namespace vcab
 
 struct GainSettings
 {
-    double maxReductionDb = 24;
+    double maxReductionDb = 20; // Params の初期値と同じ（Engine は Params の値で上書きする）
     double strengthDb = 6;
     double attackMs = 10, releaseMs = 100;
     bool onsetProtect = true;

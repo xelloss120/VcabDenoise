@@ -105,26 +105,30 @@ void VcabDenoiseProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int n = buffer.getNumSamples();
-    if (n == 0)
+    const int total = buffer.getNumSamples();
+    if (total == 0 || mono.empty())
         return;
 
-    if (static_cast<int> (mono.size()) < n)
-        mono.resize (static_cast<size_t> (n)); // 想定より大きな塊が来たとき（本来は起きない）
-
     const auto params = currentParams();
-    mixToMono (buffer, n, params.index (vcab::P::inputChannel));
-
-    inputAnalysis.push (mono.data(), n);
     engine.setRealtime (! isNonRealtime()); // ホストが書き出し中なら、声の判定をその場で計算する
-    engine.process (mono.data(), n, params);
-    outputAnalysis.push (mono.data(), n);
 
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-        buffer.copyFrom (ch, 0, mono.data(), n);
+    // prepareToPlay で申告されたより大きな塊が来たときは、mono の大きさごとに区切る（音の処理のスレッドで確保しないように）
+    const int step = static_cast<int> (mono.size());
+    for (int start = 0; start < total; start += step)
+    {
+        const int n = std::min (step, total - start);
+        mixToMono (buffer, start, n, params.index (vcab::P::inputChannel));
+
+        inputAnalysis.push (mono.data(), n);
+        engine.process (mono.data(), n, params);
+        outputAnalysis.push (mono.data(), n);
+
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            buffer.copyFrom (ch, start, mono.data(), n);
+    }
 }
 
-void VcabDenoiseProcessor::mixToMono (const juce::AudioBuffer<float>& buffer, int n, int choice)
+void VcabDenoiseProcessor::mixToMono (const juce::AudioBuffer<float>& buffer, int start, int n, int choice)
 {
     // 入力チャンネルを選ぶ（マイクが 2ch 側に入っているオーディオインターフェースもあるため。VoiChanAlgoBox と同じ）
     // choice: 0 = 自動、1 = 1ch、2 = 2ch、3 = 平均
@@ -135,7 +139,7 @@ void VcabDenoiseProcessor::mixToMono (const juce::AudioBuffer<float>& buffer, in
         const double coef = std::exp (-n / (2.0 * getSampleRate()));
         for (int ch = 0; ch < 2; ++ch)
         {
-            const auto* d = buffer.getReadPointer (ch);
+            const auto* d = buffer.getReadPointer (ch, start);
             double sum = 0;
             for (int i = 0; i < n; ++i)
                 sum += static_cast<double> (d[i]) * d[i];
@@ -155,13 +159,13 @@ void VcabDenoiseProcessor::mixToMono (const juce::AudioBuffer<float>& buffer, in
     if (numIn <= 0)
         std::fill (mono.begin(), mono.begin() + n, 0.0f);
     else if (numIn == 1 || choice == 1)
-        std::copy (buffer.getReadPointer (0), buffer.getReadPointer (0) + n, mono.begin());
+        std::copy (buffer.getReadPointer (0, start), buffer.getReadPointer (0, start) + n, mono.begin());
     else if (choice == 2)
-        std::copy (buffer.getReadPointer (1), buffer.getReadPointer (1) + n, mono.begin());
+        std::copy (buffer.getReadPointer (1, start), buffer.getReadPointer (1, start) + n, mono.begin());
     else
     {
-        const auto* l = buffer.getReadPointer (0);
-        const auto* r = buffer.getReadPointer (1);
+        const auto* l = buffer.getReadPointer (0, start);
+        const auto* r = buffer.getReadPointer (1, start);
         for (int i = 0; i < n; ++i)
             mono[static_cast<size_t> (i)] = 0.5f * (l[i] + r[i]);
     }

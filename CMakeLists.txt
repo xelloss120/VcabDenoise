@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(VcabDenoise VERSION 1.2.0 LANGUAGES C CXX)
+project(VcabDenoise VERSION 1.2.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,13 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 if(MSVC)
     add_compile_options(/utf-8)
 endif()
+
+# サブモジュールを取得していないときは、分かりやすいメッセージで止める
+foreach(sub JUCE rnnoise pffft)
+    if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/external/${sub}/.git)
+        message(FATAL_ERROR "external/${sub} がありません。git submodule update --init external/${sub} で取得してください")
+    endif()
+endforeach()
 
 add_subdirectory(external/JUCE)
 
@@ -26,6 +33,7 @@ if(NOT EXISTS ${RNNOISE_MODEL_DIR}/src/rnnoise_data.c)
     file(DOWNLOAD https://media.xiph.org/rnnoise/models/rnnoise_data-${RNNOISE_MODEL_HASH}.tar.gz
          ${RNNOISE_MODEL_DIR}/rnnoise_data.tar.gz
          EXPECTED_HASH SHA256=${RNNOISE_MODEL_HASH}
+         TIMEOUT 300
          STATUS RNNOISE_DOWNLOAD_STATUS)
     list(GET RNNOISE_DOWNLOAD_STATUS 0 RNNOISE_DOWNLOAD_CODE)
     if(NOT RNNOISE_DOWNLOAD_CODE EQUAL 0)
@@ -61,6 +69,8 @@ set_source_files_properties(external/rnnoise/src/x86/nnet_sse4_1.c PROPERTIES CO
 if(MSVC)
     set_source_files_properties(external/rnnoise/src/x86/nnet_avx2.c PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 else()
+    # GCC・Clang では、CPU の調べ方を指定しないと x86cpu.c が #error で止まる（MSVC は自動で決まる）
+    target_compile_definitions(RNNoise PRIVATE CPU_INFO_BY_C)
     set_source_files_properties(external/rnnoise/src/x86/nnet_sse4_1.c PROPERTIES COMPILE_OPTIONS "-msse4.1")
     set_source_files_properties(external/rnnoise/src/x86/nnet_avx2.c PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
 endif()

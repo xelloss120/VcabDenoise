@@ -178,20 +178,9 @@ int main (int argc, char* argv[])
         }
         else if (a == "--list") { printParams(); return 0; }
         else if (a == "--selftest") return selfTest();
-        else if (a == "--set-at")
+        else if (a == "--set-at" || a == "--set")
         {
-            const double at = next().getDoubleValue();
-            const auto kv = next();
-            const int index = vcab::findParamByKey (kv.upToFirstOccurrenceOf ("=", false, false).toStdString());
-            if (index < 0)
-            {
-                std::cerr << "知らないパラメータ: " << kv << "（--list で一覧）\n";
-                return 1;
-            }
-            changes.push_back ({ at, index, kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue() });
-        }
-        else if (a == "--set")
-        {
+            const double at = a == "--set-at" ? next().getDoubleValue() : 0.0;
             const auto kv = next();
             const auto key = kv.upToFirstOccurrenceOf ("=", false, false).toStdString();
             const int index = vcab::findParamByKey (key);
@@ -200,7 +189,18 @@ int main (int argc, char* argv[])
                 std::cerr << "知らないパラメータ: " << key << "（--list で一覧）\n";
                 return 1;
             }
-            params.v[static_cast<size_t> (index)] = kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue();
+            // 範囲の外の値は、黙って丸めずに止める（評価の条件が知らないうちに変わらないように）
+            const auto& sp = vcab::spec (static_cast<vcab::P> (index));
+            const float value = kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue();
+            if (! std::isfinite (value) || value < sp.minValue || value > sp.maxValue)
+            {
+                std::cerr << "範囲の外の値: " << kv << "（" << sp.minValue << "〜" << sp.maxValue << "）\n";
+                return 1;
+            }
+            if (a == "--set-at")
+                changes.push_back ({ at, index, value });
+            else
+                params.v[static_cast<size_t> (index)] = value;
         }
         else { printUsage(); return a == "--help" ? 0 : 1; }
     }
@@ -219,6 +219,11 @@ int main (int argc, char* argv[])
         return 1;
     }
     const double sr = reader->sampleRate;
+    if (reader->lengthInSamples <= 0 || reader->lengthInSamples > (1 << 30) || reader->numChannels <= 0)
+    {
+        std::cerr << "長さかチャンネル数が扱えない WAV です: " << inPath << "\n";
+        return 1;
+    }
     const int total = static_cast<int> (reader->lengthInSamples);
     juce::AudioBuffer<float> buf (static_cast<int> (reader->numChannels), total);
     reader->read (&buf, 0, total, 0, true, true);
