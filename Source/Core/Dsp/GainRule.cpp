@@ -114,10 +114,12 @@ void GainRule::prepare (int fftSize, double sampleRate, int hopSize)
     slowCoef = coef (0.040);
     openAttack = coef (0.005);
     openRelease = coef (0.040);
+    weightCoef = coef (0.005);
     holdFrames = std::max (1, static_cast<int> (std::lround (0.030 / hopSeconds)));
     slowPower.assign (b, 0.0f);
     opened.assign (b, 0.0f);
     holdLeft.assign (b, 0);
+    weightPower.assign (b, 0.0f);
     reset();
 }
 
@@ -149,6 +151,7 @@ void GainRule::reset()
     std::fill (slowPower.begin(), slowPower.end(), 0.0f);
     std::fill (opened.begin(), opened.end(), 0.0f);
     std::fill (holdLeft.begin(), holdLeft.end(), 0);
+    std::fill (weightPower.begin(), weightPower.end(), 0.0f);
 }
 
 void GainRule::compute (const float* power, const float* noise, const GainSettings& s, float* gainDb)
@@ -320,6 +323,10 @@ void GainRule::protectOnset (const float* power, const float* noise)
         if (p > nz * 10.0f && p > slowPower[i] * 2.0f)
             holdLeft[i] = holdFrames;
         slowPower[i] += slowCoef * (p - slowPower[i]);
+        // 開ける量の重みに使う大きさ: 上がるときも下がるときも同じ速さ（5ms）でならす。瞬間の値では、ノイズや声の細かい揺れで、
+        // 開ける量が区画ごと・フレームごとにばらばらに上下する（声にかかる抑制のギザギザ。RX との比較 15.4）。
+        // 上がるときだけすぐ追う形は、ノイズの一瞬の山を拾って保ち、粒が増えた
+        weightPower[i] += weightCoef * (p - weightPower[i]);
         if (holdLeft[i] > 0)
         {
             --holdLeft[i];
@@ -330,7 +337,7 @@ void GainRule::protectOnset (const float* power, const float* noise)
             opened[i] -= openRelease * opened[i];
         }
         // 開ける量は、SNR が +9dB（8 倍）〜 +15dB（32 倍）の間でなだらかに。開けるときだけ、大きさに戻して計算する
-        const float amount = opened[i] * std::clamp ((p / nz - 8.0f) / 24.0f, 0.0f, 1.0f);
+        const float amount = opened[i] * std::clamp ((weightPower[i] / nz - 8.0f) / 24.0f, 0.0f, 1.0f);
         if (amount > 1.0e-4f)
         {
             const double g = std::exp (lg[i]);

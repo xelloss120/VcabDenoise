@@ -31,7 +31,7 @@ std::vector<ParamSpec> makeSpecs()
 
         // 狭帯域ノイズ
         { P::tonalOn,             "tonal_on",            "狭帯域抑制",                 T::toggle,   0,       1,       1,       1,     0,      "",   {} },
-        { P::tonalSensitivity,    "tonal_sensitivity",   "感度",                       T::floating, 3,       30,      12,      0.5f,  0,      "dB", {} },
+        { P::tonalSensitivity,    "tonal_sensitivity",   "感度",                       T::floating, 10,      30,      12,      0.5f,  0,      "dB", {} },
         { P::tonalCount,          "tonal_count",         "本数上限",                   T::floating, 1,       8,       4,       1,     0,      "本", {} },
         { P::tonalMaxDepth,       "tonal_max_depth",     "深さ上限",                   T::floating, 0,       40,      24,      0.5f,  0,      "dB", {} },
         { P::tonalActivateSec,    "tonal_activate",      "持続判定時間",               T::floating, 0.1f,    5,       1,       0.05f, 1,      "秒", {} },

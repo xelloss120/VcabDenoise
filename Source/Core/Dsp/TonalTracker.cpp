@@ -24,6 +24,7 @@ constexpr double kJumpRange = 0.3;             // 「近く」とみなす範囲
 constexpr double kWidth2k = 70;                // 谷の幅（半値幅。2kHz のとき。周波数に比例）
 constexpr double kLowWidth = 20;               // kVoiceLowHz より低い谷の幅
 constexpr double kQuietDb = -96;               // これより小さい山は追いかけない（正弦波の振幅の dBFS）
+constexpr double kSmoothSec = 0.1;             // 山を探す前に、区画の大きさ（dB）を時間でならす時定数（2026-11-18）
 // 声の倍音の列とみなすずれ（基音に対する割合）
 constexpr double kHarmonicTolerance = 0.08;
 
@@ -58,6 +59,7 @@ void TonalTracker::prepare (double sampleRate, int fftSize, double hop)
     hopSeconds = hop;
     binHz = sr / size;
     magDb.assign (static_cast<size_t> (size / 2 + 1), 0.0);
+    smoothDb.assign (static_cast<size_t> (size / 2 + 1), 0.0);
     prefix.assign (static_cast<size_t> (size / 2 + 2), 0.0);
     candidates.reserve (256);
     reset();
@@ -67,6 +69,7 @@ void TonalTracker::reset()
 {
     for (auto& t : tracks)
         t = {};
+    smoothFirst = true;
 }
 
 double TonalTracker::widthFor (double freq) const
@@ -81,8 +84,24 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
 {
     const int half = size / 2;
     const double ampDb = 20.0 * std::log10 (toAmplitude);
+    // 区画の大きさを、dB のまま時間でならす（ノイズの揺らぎの山を低くし、揺らぎの山の列を声の倍音とみなさないように。
+    // 大きさの 2 乗でならすと、周りの平均（dB の平均）が約 2.5dB 高く出て、持続音の突き出た量が減る）。
+    // 声がある間はならしを進めず、そのフレームの値を使う（ならしの中に声の倍音が残り、声が止まった後に拾わないように）
+    const double smoothA = smoothFirst ? 0.0 : std::exp (-hopSeconds / kSmoothSec);
     for (int k = 0; k <= half; ++k)
-        magDb[static_cast<size_t> (k)] = 10.0 * std::log10 (static_cast<double> (power[k]) + 1.0e-24) + ampDb;
+    {
+        const auto i = static_cast<size_t> (k);
+        const double now = 10.0 * std::log10 (static_cast<double> (power[k]) + 1.0e-24) + ampDb;
+        if (voiced)
+        {
+            magDb[i] = now;
+            continue;
+        }
+        smoothDb[i] = smoothA * smoothDb[i] + (1.0 - smoothA) * now;
+        magDb[i] = smoothDb[i];
+    }
+    if (! voiced)
+        smoothFirst = false;
     prefix[0] = 0;
     for (int k = 0; k <= half; ++k)
         prefix[static_cast<size_t> (k + 1)] = prefix[static_cast<size_t> (k)] + magDb[static_cast<size_t> (k)];

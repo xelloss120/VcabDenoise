@@ -16,7 +16,8 @@
 //      割合とならしの幅は、2026-11-10 まで調整項目だったもの（11-12 に固定）。
 //   4. 立ち上がり保護（入り切りできる）: 区画の大きさが、ノイズより 10dB 以上大きく、ゆっくりの大きさ（40ms）より
 //      3dB 以上急に大きくなったら、30ms の間その区画を 5ms で開ける（開ける量は SNR +9〜+15dB でなだらかに、その後 40ms で戻す。
-//      判定は VoiChanAlgoBox の帯域分割の「立ち上がりの保護」と同じ値）。
+//      判定は VoiChanAlgoBox の帯域分割の「立ち上がりの保護」と同じ値）。開ける量の SNR の重みには、区画の大きさを 5ms でならした値を使う
+//      （瞬間の値だと、区画ごと・フレームごとにばらばらに上下し、声にかかる抑制のギザギザになるため。2026-11-19）。
 // 係数（判定指向型の 0.98、Cohen の 0.7）は、論文の分析の間隔での値を、今の間隔に換算して使う。
 // 計算は、残す割合の自然対数のまま進める（対数と指数の計算を、区画ごとに数回に減らすため）。結果は dB で返す。
 // 1〜3 は VoiChanAlgoBox の SpectralGain と GainSmoother から、使う部分だけを移したもの。
@@ -80,7 +81,8 @@ private:
     // 立ち上がり保護
     std::vector<float> slowPower, opened;
     std::vector<int> holdLeft;
-    float slowCoef = 0.1f, openAttack = 0.1f, openRelease = 0.1f;
+    std::vector<float> weightPower; // 開ける量の SNR の重みに使う、時間でならした区画の大きさ
+    float slowCoef = 0.1f, openAttack = 0.1f, openRelease = 0.1f, weightCoef = 0.5f;
     int holdFrames = 10;
 };
 

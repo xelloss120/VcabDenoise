@@ -50,7 +50,7 @@ case('tones_default', 'tones')
 case('tones_noise_only', 'tones', ['noise_only=1'])
 case('tones_bypass', 'tones', ['bypass=1'])
 case('tones_off', 'tones', ['tonal_on=0'])
-case('tones_sensitive', 'tones', ['tonal_sensitivity=9', 'tonal_count=8', 'tonal_max_depth=40'])
+case('tones_sensitive', 'tones', ['tonal_sensitivity=10', 'tonal_count=8', 'tonal_max_depth=40'])
 case('tones96_default', 'tones96')
 case('tones_slow', 'tones', ['tonal_activate=2'])
 
