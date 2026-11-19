@@ -73,14 +73,18 @@ private:
     };
 
     void updateTracks (bool voiced, const TonalSettings& s);
+    // mag の中の、周りより sensitivityDb 以上突き出た山を out に入れる（pre は mag の累積和を作る場所）
+    void findPeaks (const std::vector<double>& mag, std::vector<double>& pre, std::vector<Candidate>& out, double sensitivityDb) const;
     double widthFor (double freq) const;
 
     double sr = 48000, hopSeconds = 0.02, binHz = 11.7;
     int size = 4096;
     std::vector<double> magDb, prefix;
+    std::vector<double> rawDb, rawPrefix; // ならす前の区画の大きさ（倍音の判定に使う）
     std::vector<double> smoothDb; // 時間でならした区画の大きさ（dB。声が出ていないフレームだけで進める）
     bool smoothFirst = true;
     std::vector<Candidate> candidates;
+    std::vector<Candidate> rawCandidates; // ならす前の大きさで見つけた山（倍音の判定だけに使う）
     std::array<Track, kMaxTracks> tracks {};
 };
 

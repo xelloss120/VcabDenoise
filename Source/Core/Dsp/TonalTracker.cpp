@@ -61,7 +61,10 @@ void TonalTracker::prepare (double sampleRate, int fftSize, double hop)
     magDb.assign (static_cast<size_t> (size / 2 + 1), 0.0);
     smoothDb.assign (static_cast<size_t> (size / 2 + 1), 0.0);
     prefix.assign (static_cast<size_t> (size / 2 + 2), 0.0);
+    rawDb.assign (static_cast<size_t> (size / 2 + 1), 0.0);
+    rawPrefix.assign (static_cast<size_t> (size / 2 + 2), 0.0);
     candidates.reserve (256);
+    rawCandidates.reserve (256);
     reset();
 }
 
@@ -80,74 +83,64 @@ double TonalTracker::widthFor (double freq) const
     return std::max (kWidth2k * freq / 2000.0, 2.0 * binHz);
 }
 
-void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced, const TonalSettings& s)
+void TonalTracker::findPeaks (const std::vector<double>& mag, std::vector<double>& pre, std::vector<Candidate>& out, double sensitivityDb) const
 {
     const int half = size / 2;
-    const double ampDb = 20.0 * std::log10 (toAmplitude);
-    // 区画の大きさを、dB のまま時間でならす（ノイズの揺らぎの山を低くし、揺らぎの山の列を声の倍音とみなさないように。
-    // 大きさの 2 乗でならすと、周りの平均（dB の平均）が約 2.5dB 高く出て、持続音の突き出た量が減る）。
-    // 声がある間はならしを進めず、そのフレームの値を使う（ならしの中に声の倍音が残り、声が止まった後に拾わないように）
-    const double smoothA = smoothFirst ? 0.0 : std::exp (-hopSeconds / kSmoothSec);
+    pre[0] = 0;
     for (int k = 0; k <= half; ++k)
-    {
-        const auto i = static_cast<size_t> (k);
-        const double now = 10.0 * std::log10 (static_cast<double> (power[k]) + 1.0e-24) + ampDb;
-        if (voiced)
-        {
-            magDb[i] = now;
-            continue;
-        }
-        smoothDb[i] = smoothA * smoothDb[i] + (1.0 - smoothA) * now;
-        magDb[i] = smoothDb[i];
-    }
-    if (! voiced)
-        smoothFirst = false;
-    prefix[0] = 0;
-    for (int k = 0; k <= half; ++k)
-        prefix[static_cast<size_t> (k + 1)] = prefix[static_cast<size_t> (k)] + magDb[static_cast<size_t> (k)];
+        pre[static_cast<size_t> (k + 1)] = pre[static_cast<size_t> (k)] + mag[static_cast<size_t> (k)];
 
     const int floorHalf = std::max (kFloorGap + 2, static_cast<int> (std::lround (kNeighborHz / binHz)));
     auto floorAt = [&] (int k)
     {
         const int a0 = std::max (0, k - floorHalf), a1 = std::max (0, k - kFloorGap);
         const int b0 = std::min (half + 1, k + kFloorGap + 1), b1 = std::min (half + 1, k + floorHalf + 1);
-        const double sum = (prefix[static_cast<size_t> (a1)] - prefix[static_cast<size_t> (a0)])
-                         + (prefix[static_cast<size_t> (b1)] - prefix[static_cast<size_t> (b0)]);
+        const double sum = (pre[static_cast<size_t> (a1)] - pre[static_cast<size_t> (a0)])
+                         + (pre[static_cast<size_t> (b1)] - pre[static_cast<size_t> (b0)]);
         const int count = (a1 - a0) + (b1 - b0);
-        return count > 0 ? sum / count : magDb[static_cast<size_t> (k)];
+        return count > 0 ? sum / count : mag[static_cast<size_t> (k)];
     };
 
-    // ---- 1. 突き出た山を探す ----
-    candidates.clear();
+    out.clear();
     const int kLow = std::max (3, static_cast<int> (kLowHz / binHz));
     const int kHigh = std::min (half - 3, static_cast<int> (std::min (kHighHz, sr * 0.45) / binHz));
     for (int k = kLow; k <= kHigh; ++k)
     {
-        const double v = magDb[static_cast<size_t> (k)];
+        const double v = mag[static_cast<size_t> (k)];
         if (v < kQuietDb)
             continue; // 聞こえないほど小さい山は追いかけない
         bool isMax = true;
         for (int d = 1; d <= 2 && isMax; ++d)
-            isMax = v >= magDb[static_cast<size_t> (k - d)] && v > magDb[static_cast<size_t> (k + d)];
+            isMax = v >= mag[static_cast<size_t> (k - d)] && v > mag[static_cast<size_t> (k + d)];
         if (! isMax)
             continue;
         const double prominence = v - floorAt (k);
-        if (prominence < s.sensitivityDb)
+        if (prominence < sensitivityDb)
             continue;
         // 周波数を、区画の間まで細かく求める（3 点を通る放物線）
-        const double a = magDb[static_cast<size_t> (k - 1)], c = magDb[static_cast<size_t> (k + 1)];
+        const double a = mag[static_cast<size_t> (k - 1)], c = mag[static_cast<size_t> (k + 1)];
         const double den = a - 2 * v + c;
         const double off = std::abs (den) < 1.0e-12 ? 0.0 : std::clamp (0.5 * (a - c) / den, -0.5, 0.5);
-        if (candidates.size() < 255)
-            candidates.push_back ({ (k + off) * binHz, prominence, false, isMainsHarmonic ((k + off) * binHz) });
+        if (out.size() < 255)
+            out.push_back ({ (k + off) * binHz, prominence, false, isMainsHarmonic ((k + off) * binHz) });
     }
 
-    // ---- 2. 声の倍音（等間隔に並んだ山）を見分ける（VoiChanAlgoBox と同じ） ----
+}
+
+void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced, const TonalSettings& s)
+{
+    const int half = size / 2;
+    const double ampDb = 20.0 * std::log10 (toAmplitude);
+    // ---- 1. 声の倍音（等間隔に並んだ山）を、ならす前の大きさで見分ける ----
+    for (int k = 0; k <= half; ++k)
+        rawDb[static_cast<size_t> (k)] = 10.0 * std::log10 (static_cast<double> (power[k]) + 1.0e-24) + ampDb;
+    findPeaks (rawDb, rawPrefix, rawCandidates, s.sensitivityDb);
+    // VoiChanAlgoBox と同じ。
     // 電源の倍数でない山が 2 本以上ある列だけを声とみなす。ハムの列（100, 200, 300, 400Hz …）が「基音 100Hz の声」に
     // 見えないように。声の倍音がたまたま電源の倍数に重なっても（基音 130Hz の 650Hz など）、その山は倍音として守る
     double bestF0 = 0;
     int bestCount = 0;
-    for (const auto& c : candidates)
+    for (const auto& c : rawCandidates)
     {
         if (c.freq > 5000)
             break;
@@ -157,7 +150,7 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
             if (f0 < 70 || f0 > 500)
                 continue;
             int count = 0, notMains = 0;
-            for (const auto& o : candidates)
+            for (const auto& o : rawCandidates)
             {
                 if (o.freq > 5000)
                     break;
@@ -176,12 +169,34 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
         }
     }
     const bool harmonicVoice = bestCount >= 4;
+    const bool voice = voiced || harmonicVoice;
+
+    // ---- 2. 区画の大きさを、dB のまま時間でならしてから、削る山を探す ----
+    // ノイズの揺らぎの山を低くし、揺らぎの山を持続音とみなしにくくする。大きさの 2 乗でならすと、周りの平均（dB の平均）が
+    // 約 2.5dB 高く出て、持続音の突き出た量が減る。声がある間（RNNoise の判定か、倍音の判定）はならしを進めず、そのフレームの値を使う
+    // （ならしの中に声の倍音が残り、声が止まった後に拾わないように。また、揺れる倍音をならすと止まった山に見え、持続音とみなすため。
+    // 倍音の判定をならした大きさで行うと、RNNoise が見逃す高い歌声で倍音を削っていた。2026-11-19）
+    const double smoothA = smoothFirst ? 0.0 : std::exp (-hopSeconds / kSmoothSec);
+    for (int k = 0; k <= half; ++k)
+    {
+        const auto i = static_cast<size_t> (k);
+        if (voice)
+        {
+            magDb[i] = rawDb[i];
+            continue;
+        }
+        smoothDb[i] = smoothA * smoothDb[i] + (1.0 - smoothA) * rawDb[i];
+        magDb[i] = smoothDb[i];
+    }
+    if (! voice)
+        smoothFirst = false;
+    findPeaks (magDb, prefix, candidates, s.sensitivityDb);
     if (harmonicVoice)
         for (auto& c : candidates)
             if (c.freq <= 5000 && nearHarmonic (c.freq, bestF0))
                 c.harmonic = true;
 
-    updateTracks (voiced || harmonicVoice, s);
+    updateTracks (voice, s);
 }
 
 void TonalTracker::updateTracks (bool voiced, const TonalSettings& s)
