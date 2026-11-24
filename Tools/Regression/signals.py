@@ -15,10 +15,13 @@ TTS = os.path.join(WORK, 'tts.wav')                                     # make_t
 
 
 def render(src, out, sets, extra_args=()):
-    """vcabdn_render で src を処理して out に書く。sets は 'key=value' の並び"""
-    args = [EXE, '--in', src, '--out', out, *extra_args]
+    """vcabdn_render で src を処理して out に書く。sets は 'key=value' の並び。
+    'exe=パス' があれば、その vcabdn_render で処理する（前の版と比べるとき。例: wide_eval.py --a exe=前の版.exe）"""
+    exe = next((s[4:] for s in sets if s.startswith('exe=')), EXE)
+    args = [exe, '--in', src, '--out', out, *extra_args]
     for s in sets:
-        args += ['--set', s]
+        if not s.startswith('exe='):
+            args += ['--set', s]
     return subprocess.run(args, check=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
 
 

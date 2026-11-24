@@ -17,7 +17,7 @@
 `vcabdn_render --shadow` で出力を「声の分」と「ノイズの分」に正確に分け、声の削れ、抑制の揺れ（速さ別）とギザギザ、残ったノイズの揺れ、粒（ミュージカルノイズ）、語頭・語尾、品質の点数（PESQ、STOI、DNSMOS）を出します。測るものの詳しい中身は、スクリプトの先頭に書いてあります。
 
 1. `powershell -File make_voices.ps1` で、声（日本語と英語の音声合成）を `build/regression/voices/` に作る（一度だけ）。低い声とささやき声は、スクリプトがこの 2 つから作ります
-2. `python wide_eval.py --a max_reduction=20 --b max_reduction=24`（約 10 分。`--quick` で 18 条件・約 1 分、`--with strength=3` で両方に設定を足す、`--no-quality` で品質の点数を省く）
+2. `python wide_eval.py --a max_reduction=20 --b max_reduction=24`（約 10 分。`--quick` で 18 条件・約 1 分、`--with strength=3` で両方に設定を足す、`--no-quality` で品質の点数を省く）。前の版と比べるときは、前の版の vcabdn_render を別の場所にコピーして `--a exe=そのパス` と書く
 
 品質の点数には、`pip install pesq pystoi onnxruntime`（pesq は Windows ではビルドが要るので、Visual Studio の `vcvars64.bat` を通した環境で入れる）と、
 DNSMOS のモデル（[DNS-Challenge](https://github.com/microsoft/DNS-Challenge) の `DNSMOS/DNSMOS/sig_bak_ovr.onnx` を `build/regression/dnsmos/` に置く）が要ります。ないときは、その点数だけ省きます。

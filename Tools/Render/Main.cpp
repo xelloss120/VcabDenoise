@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -142,6 +143,7 @@ int main (int argc, char* argv[])
     int block = 128;
     double learnFrom = -1, learnTo = -1;
     bool printNoiseCurve = false, printNotches = false, realtime = false;
+    juce::String tracePath;
     vcab::ParamValues params;
     struct Change
     {
@@ -170,6 +172,7 @@ int main (int argc, char* argv[])
         else if (a == "--load-learned") loadLearnedPath = next();
         else if (a == "--noise-curve") printNoiseCurve = true;
         else if (a == "--notches") printNotches = true;
+        else if (a == "--trace") tracePath = next();
         else if (a == "--realtime") realtime = true;
         else if (a == "--shadow")
         {
@@ -263,6 +266,10 @@ int main (int argc, char* argv[])
     const int learnStart = learnFrom >= 0 ? static_cast<int> (learnFrom * sr) : -1;
     const int learnStop = learnTo >= 0 ? static_cast<int> (learnTo * sr) : -1;
     int nextReport = static_cast<int> (sr);
+    std::ofstream trace;
+    if (tracePath.isNotEmpty())
+        trace.open (tracePath.toStdString(), std::ios::binary);
+    int nextTrace = 0;
     for (int pos = 0; pos < total; pos += block)
     {
         const int n = std::min (block, total - pos);
@@ -279,6 +286,16 @@ int main (int argc, char* argv[])
         for (size_t c = 0; c < shadows.size(); ++c)
             shadowPtr[c] = shadows[c].data() + pos;
         engine.process (data.data() + pos, n, params, shadows.empty() ? nullptr : shadowPtr.data());
+        if (trace.is_open() && pos + n >= nextTrace)
+        {
+            nextTrace += static_cast<int> (sr / 100);
+            std::vector<float> row;
+            row.push_back (static_cast<float> ((pos + n) / sr));
+            row.push_back (engine.meters.voice.load() ? 1.0f : 0.0f);
+            for (const auto& v : engine.meters.noiseCurveDb) row.push_back (v.load());
+            for (const auto& v : engine.meters.gainCurveDb) row.push_back (v.load());
+            trace.write (reinterpret_cast<const char*> (row.data()), static_cast<std::streamsize> (row.size() * sizeof (float)));
+        }
         if (realtime)
             std::this_thread::sleep_for (std::chrono::microseconds (static_cast<int> (n * 1.0e6 / sr)));
         if (printNotches && pos + n >= nextReport)

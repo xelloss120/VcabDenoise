@@ -95,10 +95,16 @@ void NoiseEstimator::push (const float* power, int voiceQuiet)
             {
                 const auto i = static_cast<size_t> (k);
                 double ak = a;
-                // 見積もりより急に大きい区画（一瞬の音）は、ごく弱くしか使わない（落ち着いた後だけ）
+                // 見積もりより急に大きい区画（一瞬の音）は、ごく弱くしか使わない（落ち着いた後だけ）。値も見積もりの kOutlier 倍で
+                // 頭打ちにする（重みを絞るだけだと、2 乗のまま足すので、+30dB を超える音では 0.5 秒で見積もりが +20dB 上がり、
+                // その後の声の高い帯域を下げ続けていた。2026-11-25）
+                float target = slot[i];
                 if (vadUpdates > vadDelay && slot[i] > vadEst[i] * kOutlier)
+                {
                     ak *= 0.02;
-                vadEst[i] += static_cast<float> (ak) * (slot[i] - vadEst[i]);
+                    target = vadEst[i] * kOutlier;
+                }
+                vadEst[i] += static_cast<float> (ak) * (target - vadEst[i]);
             }
             // 数は上限で止める（毎秒 375 回なので、止めないと 2 か月ほど動かし続けたときに int があふれる。
             // 上限は、最初の平均（1 / (数 + 1)）がとうに 0.4 秒のならしに替わっている大きさ）
