@@ -133,42 +133,68 @@ void VcabDenoiseProcessor::mixToMono (const juce::AudioBuffer<float>& buffer, in
     // 入力チャンネルを選ぶ（マイクが 2ch 側に入っているオーディオインターフェースもあるため。VoiChanAlgoBox と同じ）
     // choice: 0 = 自動、1 = 1ch、2 = 2ch、3 = 平均
     const int numIn = getTotalNumInputChannels();
-    if (choice == 0 && numIn >= 2)
+    auto* out = mono.data();
+    if (numIn <= 0)
     {
-        // 自動: 各チャンネルの音量を約2秒でならし、もう片方が 6dB（4倍の電力）以上大きくなったら切り替える
-        const double coef = std::exp (-n / (2.0 * getSampleRate()));
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            const auto* d = buffer.getReadPointer (ch, start);
-            double sum = 0;
-            for (int i = 0; i < n; ++i)
-                sum += static_cast<double> (d[i]) * d[i];
-            autoLevel[ch] = coef * autoLevel[ch] + (1 - coef) * (sum / n);
-        }
-        const int other = 1 - autoChannel;
-        if (autoLevel[other] > autoLevel[autoChannel] * 4.0 && autoLevel[other] > 1.0e-10)
-            autoChannel = other;
-        usedInputChannel.store (autoChannel);
-        choice = autoChannel + 1;
+        std::fill (out, out + n, 0.0f);
+        return;
     }
-    else if (choice == 0)
+    const float* in[2] = { buffer.getReadPointer (0, start), buffer.getReadPointer (numIn >= 2 ? 1 : 0, start) };
+    if (numIn < 2 || choice == 1)
     {
-        choice = 1;
+        std::copy (in[0], in[0] + n, out);
+        return;
+    }
+    if (choice == 2)
+    {
+        std::copy (in[1], in[1] + n, out);
+        return;
+    }
+    if (choice == 3)
+    {
+        for (int i = 0; i < n; ++i)
+            out[i] = 0.5f * (in[0][i] + in[1][i]);
+        return;
     }
 
-    if (numIn <= 0)
-        std::fill (mono.begin(), mono.begin() + n, 0.0f);
-    else if (numIn == 1 || choice == 1)
-        std::copy (buffer.getReadPointer (0, start), buffer.getReadPointer (0, start) + n, mono.begin());
-    else if (choice == 2)
-        std::copy (buffer.getReadPointer (1, start), buffer.getReadPointer (1, start) + n, mono.begin());
-    else
+    // 自動: 大きいほうを使う。各チャンネルの音量を 0.3 秒でならし、もう片方が 2 秒続けて 6dB 以上大きいと、10ms でつないで切り替える
+    // （VcabShift と同じ形）
+    const double fs = getSampleRate();
+    const float a = static_cast<float> (std::exp (-n / (kAutoSmoothSeconds * fs)));
+    for (int c = 0; c < 2; ++c)
     {
-        const auto* l = buffer.getReadPointer (0, start);
-        const auto* r = buffer.getReadPointer (1, start);
+        double e = 0.0;
         for (int i = 0; i < n; ++i)
-            mono[static_cast<size_t> (i)] = 0.5f * (l[i] + r[i]);
+            e += static_cast<double> (in[c][i]) * in[c][i];
+        autoPower[c] = a * autoPower[c] + (1.0f - a) * static_cast<float> (e / n);
     }
+    const int other = 1 - autoChannel;
+    if (autoPower[other] > autoPower[autoChannel] * kAutoSwitchRatio && autoPower[other] > 1.0e-10f)
+    {
+        otherLouderFor += n;
+        if (otherLouderFor >= kAutoSwitchSeconds * fs)
+        {
+            autoPrev = autoChannel;
+            autoChannel = other;
+            autoFade = 0.0f;
+            otherLouderFor = 0;
+        }
+    }
+    else
+        otherLouderFor = 0;
+
+    const float fadeStep = static_cast<float> (1.0 / (kAutoFadeSeconds * fs));
+    for (int i = 0; i < n; ++i)
+    {
+        if (autoFade < 1.0f)
+        {
+            out[i] = autoFade * in[autoChannel][i] + (1.0f - autoFade) * in[autoPrev][i];
+            autoFade = std::min (1.0f, autoFade + fadeStep);
+        }
+        else
+            out[i] = in[autoChannel][i];
+    }
+    usedInputChannel.store (autoChannel);
 }
 
 juce::AudioProcessorEditor* VcabDenoiseProcessor::createEditor()

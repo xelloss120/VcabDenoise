@@ -89,7 +89,7 @@ const char* paramDescription (P id)
         case P::tonalMaxDepth:       return "1 本の谷で抑制する量の上限。抑制する量は、周りより突き出た分だけ（周りの高さにそろえる）です。";
         case P::tonalActivateSec:    return "これだけ居続けたら抑制し始めます。短くすると、伸ばした母音や歌を誤って抑制しやすくなります。";
 
-        case P::inputChannel:        return "マイクの入力チャンネル。自動は、1ch と 2ch の大きいほうを使います（もう片方が数秒続けて 6dB 以上大きいと切り替え）。";
+        case P::inputChannel:        return "マイクの入力チャンネル。自動は、1ch と 2ch の大きいほうを使います（もう片方が 2 秒続けて 6dB 以上大きいと切り替え）。";
         case P::showNoiseEstimate:   return "モニターに、ノイズ推定（学習固定の値、または自動追従で追いかけている値）の線を重ねます。";
 
         case P::count:               break;

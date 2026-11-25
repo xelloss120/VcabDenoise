@@ -95,9 +95,15 @@ private:
     vcab::Engine engine;
     std::vector<float> mono;
 
-    // 入力チャンネルの自動選択（数秒ならした各チャンネルの音量）
-    double autoLevel[2] { 0, 0 };
-    int autoChannel = 0;
+    // 入力チャンネルの自動選択（VcabShift と同じ形）
+    static constexpr double kAutoSmoothSeconds = 0.3;  // 各チャンネルの音量のならし
+    static constexpr double kAutoSwitchSeconds = 2.0;  // もう片方が大きい状態がこれだけ続いたら切り替える
+    static constexpr float kAutoSwitchRatio = 3.98f;   // 6dB（パワー）
+    static constexpr double kAutoFadeSeconds = 0.010;  // 切り替えのつなぎ
+    float autoPower[2] { 0.0f, 0.0f };
+    int autoChannel = 0, autoPrev = 0;
+    int otherLouderFor = 0;
+    float autoFade = 1.0f; // 前のチャンネルから今のチャンネルへのつなぎ（1 で今だけ）
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VcabDenoiseProcessor)
 };
