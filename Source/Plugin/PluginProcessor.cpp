@@ -182,7 +182,12 @@ void VcabDenoiseProcessor::resetAllParameters()
     for (auto* param : getParameters())
         if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param))
             if (ranged->getParameterID() != vcab::spec (vcab::P::inputChannel).key)
+            {
+                // ホストに 1 回の操作として伝える（オートメーションの書き込みや元に戻すで、値が飛ばないように）
+                ranged->beginChangeGesture();
                 ranged->setValueNotifyingHost (ranged->getDefaultValue());
+                ranged->endChangeGesture();
+            }
 }
 
 void VcabDenoiseProcessor::getStateInformation (juce::MemoryBlock& destData)

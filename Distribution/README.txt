@@ -1,4 +1,4 @@
-﻿VcabDenoise 1.2.3
+﻿VcabDenoise 1.2.4
 =================
 
 声のためのノイズ除去（デノイズ）プラグインです（遅延 0）。
@@ -32,5 +32,5 @@ PC のファンのような定常的なノイズと、「ふぃーん」「キ�
   AGPLv3（LICENSE.txt）。使っているライブラリのライセンスは
   THIRD_PARTY_LICENSES.md にあります（GPLv3 の本文は GPL-3.0.txt）。
   この版のソースコード:
-    https://github.com/xelloss120/VcabDenoise/releases/tag/v1.2.3
+    https://github.com/xelloss120/VcabDenoise/releases/tag/v1.2.4
   VST is a trademark of Steinberg Media Technologies GmbH.
