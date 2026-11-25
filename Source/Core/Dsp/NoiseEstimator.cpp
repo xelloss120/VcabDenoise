@@ -25,6 +25,7 @@ void NoiseEstimator::prepare (int bins, double frameRate, double sampleRate, int
     vadQueue.assign (static_cast<size_t> (vadDelay), std::vector<float> (c, 0.0f));
     vadEst.assign (c, 0.0f);
     vadSlowCoeff = 1.0 - std::exp (-1.0 / (frameRate * 0.4));  // 声のない間は、約 0.4 秒でならして追う
+    vadOutlierStart = std::max (vadDelay, static_cast<int> (std::lround (kOutlierStartSeconds * frameRate)));
     vadStuckFrames = static_cast<int> (std::lround (4.0 * frameRate));
     vadStuckCoeff = 1.0 - std::exp (-1.0 / (frameRate * 2.0));
     // 遅らせたフレームの分析の窓（settleLength）の前 50ms から、今（判定が出ている所）までが、ずっと「声なし」なら使う
@@ -91,15 +92,18 @@ void NoiseEstimator::push (const float* power, int voiceQuiet)
         {
             // 最初は平均（早く落ち着くように）、その後は約 0.4 秒でならす
             const double a = std::max (1.0 / (vadUpdates + 1), vadSlowCoeff);
+            // 見積もりより急に大きい区画（一瞬の音）は、ごく弱くしか使わない。値も見積もりの kOutlier 倍で頭打ちにする
+            // （重みを絞るだけだと、2 乗のまま足すので、+30dB を超える音では 0.5 秒で見積もりが +20dB 上がり、その後の声の高い帯域を
+            // 下げ続けていた。2026-11-25）。ただし起動直後（「声なし」の音を kOutlierStartSeconds 分覚えるまで）は、この扱いをしない
+            // （起動直後の短い間に実際のノイズより小さい音を覚えると、本当のノイズを外れ値として扱い、追いつくのに 10 秒以上かかっていた。
+            // 2026-11-25）
+            const bool guardOutliers = vadUpdates > vadOutlierStart;
             for (int k = 0; k < channels; ++k)
             {
                 const auto i = static_cast<size_t> (k);
                 double ak = a;
-                // 見積もりより急に大きい区画（一瞬の音）は、ごく弱くしか使わない（落ち着いた後だけ）。値も見積もりの kOutlier 倍で
-                // 頭打ちにする（重みを絞るだけだと、2 乗のまま足すので、+30dB を超える音では 0.5 秒で見積もりが +20dB 上がり、
-                // その後の声の高い帯域を下げ続けていた。2026-11-25）
                 float target = slot[i];
-                if (vadUpdates > vadDelay && slot[i] > vadEst[i] * kOutlier)
+                if (guardOutliers && slot[i] > vadEst[i] * kOutlier)
                 {
                     ak *= 0.02;
                     target = vadEst[i] * kOutlier;

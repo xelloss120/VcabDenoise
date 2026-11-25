@@ -5,7 +5,8 @@
 //     その前後がずっと「声なし」のものだけを、約 0.4 秒でならして使う（判定の遅れと、話し始める直前の息を覚えないため）。
 //     「声なし」の間でも、見積もりより 10dB 以上急に大きい区画は、ごく弱くしか使わず、値も見積もりの 10 倍で頭打ちにする
 //     （ボタンや関節の音、声の判定が見逃した大きな声などは「声なし」と判定されるので、そのままだと見積もりが持ち上がり、
-//     そのあと声が削れるため）。
+//     そのあと声が削れるため）。ただし起動直後（「声なし」の音を 5 秒分覚えるまで）は、この扱いをしない（起動直後の短い間に、
+//     実際のノイズより小さい音を覚えると、本当のノイズを外れ値として扱い、追いつくのに 10 秒以上かかっていたため）。
 //     4 秒以上「声あり」が続いたら、最小値の見積もりのほうが小さい区画だけ、そちらへゆっくり下げる（上げる向きには動かさない）。
 //     まだ一度も「声なし」を確かめられていない（起動直後にいきなり話し始めた）ときは、最小値の見積もりを使う。
 //   最小値: 区画ごとの、ならした大きさの最小値を、直近 1.6 秒で追いかける（Martin の minimum statistics の簡単な形）。
@@ -77,6 +78,7 @@ private:
     // 雑音として覚えないよう、その後この長さ「声なし」が続いた音だけを使う（2026-11-24。前は 0.06 秒）
     static constexpr double kVadDelaySeconds = 0.8;
     static constexpr double kLearnWaitSeconds = 1.0;    // 学習を押してから覚え始めるまで
+    static constexpr double kOutlierStartSeconds = 5.0; // 起動直後、外れ値の扱いをしない長さ（「声なし」の音を覚えた時間で数える）
     static constexpr float kOutlier = 10.0f;            // 見積もりよりこれだけ（10dB）大きい区画は、ごく弱くしか使わず、この倍率で頭打ちにする
     static constexpr float kSilentLevel = 1.0e-6f;      // -120dBFS より小さいサンプルが quietLength 続いたら、無音とみなす
     static constexpr float kTiny = 1.0e-20f;
@@ -102,7 +104,7 @@ private:
     // 自動追従（声の判定）
     std::vector<std::vector<float>> vadQueue;
     std::vector<float> vadEst;
-    int vadDelay = 1, vadPos = 0, vadFilled = 0, vadUpdates = 0, vadSinceUpdate = 0, vadStuckFrames = 1, vadNeedSamples = 0;
+    int vadDelay = 1, vadOutlierStart = 1, vadPos = 0, vadFilled = 0, vadUpdates = 0, vadSinceUpdate = 0, vadStuckFrames = 1, vadNeedSamples = 0;
     double vadSlowCoeff = 0.01, vadStuckCoeff = 0.01;
 
     // 学習
