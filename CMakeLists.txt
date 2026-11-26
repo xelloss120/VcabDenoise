@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(VcabDenoise VERSION 1.2.6 LANGUAGES C CXX)
+project(VcabDenoise VERSION 1.2.7 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -115,7 +115,7 @@ set(VCABDN_UNUSED_FORMATS JUCE_USE_FLAC=0 JUCE_USE_OGGVORBIS=0 JUCE_USE_OPUS=0 J
 
 # ---- プラグイン（VST3）と単体アプリ（EXE） ----
 juce_add_plugin(VcabDenoise
-    COMPANY_NAME "VcabDenoise"
+    COMPANY_NAME "Vcab"
     PRODUCT_NAME "VcabDenoise"
     PLUGIN_MANUFACTURER_CODE Vcha
     PLUGIN_CODE Vcdn
