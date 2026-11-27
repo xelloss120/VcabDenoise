@@ -69,9 +69,9 @@ public:
     void setShadowCount (int count); // prepare の前に呼ぶ（メモリを確保する）
     void setRealtime (bool isRealtime) noexcept { vad.setRealtime (isRealtime); }
 
-    // 画面から（どのスレッドからでもよい。音の処理のスレッドが次の塊で受け取る）
-    void requestLearning (bool start) noexcept { learnRequest.store (start ? LearnRequest::start : LearnRequest::stop); }
-    void requestClearLearned() noexcept { learnRequest.store (LearnRequest::clear); }
+    // 画面から（1 つのスレッドから呼ぶ。音の処理のスレッドが次の塊で、押された順に受け取る）
+    void requestLearning (bool start) noexcept { pushRequest (start ? LearnRequest::start : LearnRequest::stop); }
+    void requestClearLearned() noexcept { pushRequest (LearnRequest::clear); }
 
     // 学習した値の書き出しと読み込み（保存のため）。形式: 版（1）、点の数、（周波数 Hz、白色雑音に直した大きさ dB）× 点の数
     // 空や読めない曲線を読み込むと、覚えた値を消す（学習した値のない設定を読み込んだとき、前の値が残らないように）
@@ -159,8 +159,12 @@ private:
     // メーター
     double inPower = 0, outPower = 0, meterCoef = 0.001;
 
-    // 学習
-    std::atomic<LearnRequest> learnRequest { LearnRequest::none };
+    // 学習の要求（画面のスレッドが書き、音の処理のスレッドが読む、一方向のリング。
+    // 前は 1 つの値だったので、音の処理のスレッドが受け取る前に次の要求が来ると、前の要求が消えていた）
+    void pushRequest (LearnRequest r) noexcept;
+    static constexpr unsigned kRequestSlots = 16;
+    std::array<std::atomic<LearnRequest>, kRequestSlots> requests {};
+    std::atomic<unsigned> requestWrite { 0 }, requestRead { 0 };
     std::mutex curveMutex;          // learnedCurve（音の処理のスレッドは try_lock だけ）
     std::vector<float> learnedCurve; // 最後に覚えた値（周波数の曲線）。サンプルレートが変わっても使えるように、この形で持つ
     std::vector<float> curveScratch; // 音の処理のスレッドで曲線を作る場所（learnedCurve と入れ替える。prepare で大きさを確保しておく）

@@ -69,6 +69,9 @@ public:
     // 最小値を本来の大きさに戻す倍率を、白色雑音で測る（beginCalibration → 白色雑音の分析を push → finishCalibration）
     void beginCalibration();
     void finishCalibration();
+    // 測った倍率。同じサンプルレートなら毎回同じ値になるので、測り直さずに渡せる（prepare の後に）
+    float calibrationBias() const noexcept { return bias; }
+    void setCalibrationBias (float b) noexcept { bias = b; }
 
 private:
     static constexpr int kSubWindows = 8;
@@ -85,7 +88,7 @@ private:
     static constexpr int kCountLimit = 1 << 30;         // フレームの数を数える変数の上限（あふれないように）
 
     void trackMinimum (const float* power);
-    void calibrationFrame (const float* power); // 測っている間の push（大きさをためるだけ）
+    void calibrationFrame (const float* power); // 測っている間の push（最小値を追い、助走の後の平均と最小値を足していく）
 
     int channels = 0;
     double frameRateHz = 100;
@@ -97,9 +100,11 @@ private:
     bool first = true;
     std::vector<float> smooth, subMin, autoMin;
     std::vector<std::vector<float>> mins;
+    std::vector<float> pastMin; // 埋まった区切り（mins の先頭 filled 個）の最小値。区切りが替わるときだけ作り直す
     float bias = 1.5f;
     bool calibrating = false;
-    std::vector<std::vector<float>> calibFrames;
+    int calibFrames = 0, calibWarmup = 0;
+    double calibSumP = 0, calibSumM = 0;
 
     // 自動追従（声の判定）
     std::vector<std::vector<float>> vadQueue;

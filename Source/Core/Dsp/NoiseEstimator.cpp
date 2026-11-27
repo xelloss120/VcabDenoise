@@ -20,6 +20,7 @@ void NoiseEstimator::prepare (int bins, double frameRate, double sampleRate, int
     subMin.assign (c, 0.0f);
     autoMin.assign (c, 0.0f);
     mins.assign (kSubWindows, std::vector<float> (c, 0.0f));
+    pastMin.assign (c, 0.0f);
 
     vadDelay = std::max (1, static_cast<int> (std::ceil (kVadDelaySeconds * frameRate)));
     vadQueue.assign (static_cast<size_t> (vadDelay), std::vector<float> (c, 0.0f));
@@ -44,6 +45,7 @@ void NoiseEstimator::reset()
     subCount = subIndex = filled = 0;
     quietRun = validRun = 0;
     std::fill (subMin.begin(), subMin.end(), std::numeric_limits<float>::max());
+    std::fill (pastMin.begin(), pastMin.end(), std::numeric_limits<float>::max());
     std::fill (autoMin.begin(), autoMin.end(), 0.0f); // 最初の見積もりができるまでは下げない
     vadPos = vadFilled = vadUpdates = vadSinceUpdate = 0;
     std::fill (vadEst.begin(), vadEst.end(), 0.0f);
@@ -57,10 +59,8 @@ void NoiseEstimator::trackMinimum (const float* power)
         const float p = std::max (power[k], kTiny);
         smooth[i] = first ? p : smooth[i] + static_cast<float> (smoothCoeff) * (p - smooth[i]);
         subMin[i] = std::min (subMin[i], smooth[i]);
-        float m = subMin[i];
-        for (int u = 0; u < filled; ++u)
-            m = std::min (m, mins[static_cast<size_t> (u)][i]);
-        autoMin[i] = m * bias;
+        // 埋まった区切りの最小値は、区切りが替わるときにまとめて求めておく（フレームごとに 8 つを見直さない。最小値なので値は同じ）
+        autoMin[i] = std::min (subMin[i], pastMin[i]) * bias;
     }
     first = false;
     if (++subCount >= subLength)
@@ -69,6 +69,10 @@ void NoiseEstimator::trackMinimum (const float* power)
         subIndex = (subIndex + 1) % kSubWindows;
         filled = std::min (filled + 1, kSubWindows);
         std::fill (subMin.begin(), subMin.end(), std::numeric_limits<float>::max());
+        std::fill (pastMin.begin(), pastMin.end(), std::numeric_limits<float>::max());
+        for (int u = 0; u < filled; ++u)
+            for (int k = 0; k < channels; ++k)
+                pastMin[static_cast<size_t> (k)] = std::min (pastMin[static_cast<size_t> (k)], mins[static_cast<size_t> (u)][static_cast<size_t> (k)]);
         subCount = 0;
     }
 }
@@ -173,39 +177,34 @@ void NoiseEstimator::clearLearned()
 
 void NoiseEstimator::beginCalibration()
 {
+    // 測る間は倍率 1 で、push と同じ手順で最小値を追う。2 秒の助走の後の「平均 / 最小値」を倍率にする（全区画で同じ値）。
+    // 前はフレームを全部ためてから追い直していたが、ためずにその場で足していく（結果は同じ）
     calibrating = true;
     bias = 1.0f;
-    calibFrames.clear();
+    reset();
+    calibFrames = 0;
+    calibWarmup = static_cast<int> (std::lround (2.0 * frameRateHz));
+    calibSumP = calibSumM = 0;
 }
 
 void NoiseEstimator::calibrationFrame (const float* power)
 {
-    calibFrames.emplace_back (power, power + channels);
+    trackMinimum (power);
+    if (calibFrames++ < calibWarmup)
+        return;
+    // 端の区画（直流とナイキスト）は、ほかと統計が違うので入れない
+    for (int k = 1; k + 1 < channels; ++k)
+    {
+        calibSumP += power[k];
+        calibSumM += autoMin[static_cast<size_t> (k)];
+    }
 }
 
 void NoiseEstimator::finishCalibration()
 {
     calibrating = false;
-    // 測った大きさを push と同じ手順で最小値を追い直し、2 秒の後の「平均 / 最小値」を倍率にする（全区画で同じ値）
-    reset();
-    const int warmup = static_cast<int> (std::lround (2.0 * frameRateHz));
-    double sumP = 0, sumM = 0;
-    for (size_t f = 0; f < calibFrames.size(); ++f)
-    {
-        trackMinimum (calibFrames[f].data());
-        if (static_cast<int> (f) < warmup)
-            continue;
-        // 端の区画（直流とナイキスト）は、ほかと統計が違うので入れない
-        for (int k = 1; k + 1 < channels; ++k)
-        {
-            sumP += calibFrames[f][static_cast<size_t> (k)];
-            sumM += autoMin[static_cast<size_t> (k)];
-        }
-    }
-    if (sumM > 0)
-        bias = static_cast<float> (sumP / sumM);
-    calibFrames.clear();
-    calibFrames.shrink_to_fit();
+    if (calibSumM > 0)
+        bias = static_cast<float> (calibSumP / calibSumM);
     reset();
 }
 

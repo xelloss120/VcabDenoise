@@ -3,6 +3,7 @@
 #   python regress.py check   今のビルドの音を基準と比べる（結果は build/regression/out）
 #   python regress.py check 名前の一部 ...   名前にその文字列を含むものだけ
 #   python regress.py check --with キー=値 ...   全部の場合に、その設定を足す（新しいスイッチを切ったときに前と同じ音かを確かめる）
+#   python regress.py check --arg 引数 ...   全部の場合に、vcabdn_render の引数を足す（例: --arg --reprepare で、prepare をし直しても同じ音か）
 # 先に make_tts.ps1 で build/regression/tts.wav を作っておく。
 import os
 import sys
@@ -58,10 +59,14 @@ case('tones_slow', 'tones', ['tonal_activate=2'])
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else 'check'
     args = sys.argv[2:]
-    common = []
+    common, common_args = [], []
     while '--with' in args:
         i = args.index('--with')
         common.append(args[i + 1])
+        del args[i:i + 2]
+    while '--arg' in args:
+        i = args.index('--arg')
+        common_args.append(args[i + 1])
         del args[i:i + 2]
     filters = args
     inputs = make_inputs()
@@ -72,7 +77,7 @@ def main():
         if filters and not any(f in name for f in filters):
             continue
         out = os.path.join(target, name + '.wav')
-        sg.render(inputs[inp], out, sets + common, extra)
+        sg.render(inputs[inp], out, sets + common, extra + common_args)
         if mode == 'check':
             _, a = wavfile.read(os.path.join(sg.WORK, 'ref', name + '.wav'))
             _, b = wavfile.read(out)

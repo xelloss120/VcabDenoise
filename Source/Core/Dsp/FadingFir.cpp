@@ -4,6 +4,11 @@
 #include <cassert>
 #include <cmath>
 
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+ #include <xmmintrin.h>
+ #define VCAB_FIR_SSE 1
+#endif
+
 namespace vcab
 {
 
@@ -27,7 +32,7 @@ void FadingFir::prepare (int taps, int blockSize, int fade)
         b->assign (fftSize);
     for (auto& s : slots)
     {
-        s.head.assign (static_cast<size_t> (block), 0.0f);
+        s.headRev.assign (static_cast<size_t> (block), 0.0f);
         s.tail.clear();
         s.tail.resize (static_cast<size_t> (parts));
         for (auto& g : s.tail)
@@ -94,7 +99,8 @@ void FadingFir::load (int slotIndex, const float* h)
     if (identity)
         return;
 
-    std::copy (h, h + block, s.head.begin());
+    for (int i = 0; i < block; ++i)
+        s.headRev[static_cast<size_t> (block - 1 - i)] = h[i];
     for (int j = 0; j < parts; ++j)
     {
         for (int i = 0; i < block; ++i)
@@ -132,12 +138,28 @@ void FadingFir::tailSum (const Slot& s, int newest, AlignedFloats& out)
 float FadingFir::headAt (const Slot& s) const noexcept
 {
     // hist は 2 倍の長さで、histPos + block − 1 が今の入力（そこから古い向きに block 個）
-    const float* x = hist.data() + histPos + block - 1;
-    const float* h = s.head.data();
+    // 頭は逆順（headRev[j] = h[block − 1 − j]）に持ち、hist[histPos] から古い順に並ぶ入力と、前から掛けて足す
+    const float* x = hist.data() + histPos;
+    const float* h = s.headRev.data();
+#ifdef VCAB_FIR_SSE
+    __m128 a0 = _mm_setzero_ps(), a1 = _mm_setzero_ps(), a2 = _mm_setzero_ps(), a3 = _mm_setzero_ps();
+    for (int j = 0; j < block; j += 16)
+    {
+        a0 = _mm_add_ps (a0, _mm_mul_ps (_mm_loadu_ps (h + j), _mm_loadu_ps (x + j)));
+        a1 = _mm_add_ps (a1, _mm_mul_ps (_mm_loadu_ps (h + j + 4), _mm_loadu_ps (x + j + 4)));
+        a2 = _mm_add_ps (a2, _mm_mul_ps (_mm_loadu_ps (h + j + 8), _mm_loadu_ps (x + j + 8)));
+        a3 = _mm_add_ps (a3, _mm_mul_ps (_mm_loadu_ps (h + j + 12), _mm_loadu_ps (x + j + 12)));
+    }
+    const __m128 a = _mm_add_ps (_mm_add_ps (a0, a1), _mm_add_ps (a2, a3));
+    alignas (16) float lanes[4];
+    _mm_store_ps (lanes, a);
+    return (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
+#else
     float y = 0;
-    for (int i = 0; i < block; ++i)
-        y += h[i] * x[-i];
+    for (int j = 0; j < block; ++j)
+        y += h[j] * x[j];
     return y;
+#endif
 }
 
 float FadingFir::process (float x) noexcept

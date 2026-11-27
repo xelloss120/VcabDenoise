@@ -147,7 +147,9 @@ void TonalTracker::analyze (const float* power, double toAmplitude, bool voiced,
         for (int div = 1; div <= 6; ++div)
         {
             const double f0 = c.freq / div;
-            if (f0 < 70 || f0 > 500)
+            if (f0 < 70)
+                break; // div を増やすと f0 は下がる一方なので、この先は全部範囲の外
+            if (f0 > 500)
                 continue;
             int count = 0, notMains = 0;
             for (const auto& o : rawCandidates)

@@ -70,7 +70,8 @@ public:
     bool push (float x)
     {
         ring[static_cast<size_t> (pos)] = x;
-        pos = (pos + 1) % size;
+        if (++pos == size) // 1 サンプルごとの割り算を避ける
+            pos = 0;
         if (++sinceHop < hop)
             return false;
         sinceHop = 0;

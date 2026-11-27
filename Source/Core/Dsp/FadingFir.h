@@ -35,7 +35,7 @@ public:
 private:
     struct Slot
     {
-        std::vector<float> head;                       // 先頭の block 個
+        std::vector<float> headRev;                    // 先頭の block 個（逆順。headAt で前から読む）
         std::vector<AlignedFloats> tail;               // 分割ごとの FFT（大きさ 2 × block の実数の FFT。pffft の中の並び）
         std::vector<float> outCur, overlap;            // 今の塊で出す尾の分と、次の塊へ持ち越す後半
         bool identity = true;

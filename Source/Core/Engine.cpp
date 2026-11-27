@@ -204,7 +204,25 @@ void Engine::prepare (double sampleRate, int maxBlockSize)
 
 void Engine::calibrateNoise()
 {
-    // 最小値の見積もりを本来の大きさに戻す倍率を、白色雑音で測る（6 秒）
+    // 最小値の見積もりを本来の大きさに戻す倍率を、白色雑音で測る（6 秒）。
+    // 白色雑音は毎回同じ並びで、倍率は段の構成（サンプルレートで決まる）だけで決まるので、一度測ったサンプルレートでは
+    // 前の値を使う（prepare のたびの約 0.1 秒の計算を省く。ほかのインスタンスとも分け合う。値は測り直したときと同じ）
+    struct Cached
+    {
+        double rate;
+        float shortBias, midBias;
+    };
+    static std::mutex cacheMutex;
+    static std::vector<Cached> cache;
+    std::lock_guard<std::mutex> lock (cacheMutex);
+    for (const auto& c : cache)
+        if (c.rate == sr)
+        {
+            shortSide.noise.setCalibrationBias (c.shortBias);
+            midSide.noise.setCalibrationBias (c.midBias);
+            return;
+        }
+
     WhiteNoise noise;
     for (auto* st : { &shortSide, &midSide })
         st->noise.beginCalibration();
@@ -221,28 +239,43 @@ void Engine::calibrateNoise()
         st->noise.finishCalibration();
         st->analyzer.reset();
     }
+    cache.push_back ({ sr, shortSide.noise.calibrationBias(), midSide.noise.calibrationBias() });
+}
+
+void Engine::pushRequest (LearnRequest r) noexcept
+{
+    const unsigned w = requestWrite.load (std::memory_order_relaxed);
+    if (w - requestRead.load (std::memory_order_acquire) >= kRequestSlots)
+        return; // 音の処理が止まっている間に 16 回より多く押された。起こらない回数なので捨てる
+    requests[w % kRequestSlots].store (r, std::memory_order_relaxed);
+    requestWrite.store (w + 1, std::memory_order_release);
 }
 
 void Engine::handleRequests()
 {
-    switch (learnRequest.exchange (LearnRequest::none))
+    const unsigned end = requestWrite.load (std::memory_order_acquire);
+    for (unsigned r = requestRead.load (std::memory_order_relaxed); r != end; ++r)
     {
-        case LearnRequest::start:
-            shortSide.noise.startLearning();
-            midSide.noise.startLearning();
-            break;
-        case LearnRequest::stop:
-            shortSide.noise.stopLearning();
-            midSide.noise.stopLearning();
-            curveDirty.store (true);
-            break;
-        case LearnRequest::clear:
-            shortSide.noise.clearLearned();
-            midSide.noise.clearLearned();
-            curveDirty.store (true);
-            break;
-        case LearnRequest::none:
-            break;
+        switch (requests[r % kRequestSlots].load (std::memory_order_relaxed))
+        {
+            case LearnRequest::start:
+                shortSide.noise.startLearning();
+                midSide.noise.startLearning();
+                break;
+            case LearnRequest::stop:
+                shortSide.noise.stopLearning();
+                midSide.noise.stopLearning();
+                curveDirty.store (true);
+                break;
+            case LearnRequest::clear:
+                shortSide.noise.clearLearned();
+                midSide.noise.clearLearned();
+                curveDirty.store (true);
+                break;
+            case LearnRequest::none:
+                break;
+        }
+        requestRead.store (r + 1, std::memory_order_release);
     }
 
     // 画面のスレッドとは try_lock だけで受け渡す（音の処理のスレッドを待たせない。取れなければ次の塊で）
@@ -413,13 +446,14 @@ void Engine::onTonalFrame (const ParamValues& p)
         tonal.reset();
         notchCount = 0;
     }
-    meters.notchCount.store (notchCount);
+    // 谷の値を書いてから数を書く（数が増えたとき、画面が書く前の古い値の谷を一瞬描かないように）
     for (int i = 0; i < notchCount; ++i)
     {
         meters.notchHz[static_cast<size_t> (i)].store (notchList[static_cast<size_t> (i)].freq);
         meters.notchDepthDb[static_cast<size_t> (i)].store (notchList[static_cast<size_t> (i)].depthDb);
         meters.notchWidthHz[static_cast<size_t> (i)].store (notchList[static_cast<size_t> (i)].widthHz);
     }
+    meters.notchCount.store (notchCount);
 
     if (notchCount == 0)
     {

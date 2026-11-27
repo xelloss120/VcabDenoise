@@ -9,6 +9,8 @@
 
 #include "Fft.h"
 
+#include <vector>
+
 namespace vcab
 {
 
@@ -22,9 +24,12 @@ public:
     void design (const double* logMag, float* h, int taps);
 
 private:
+    static double taperAt (int i, int taper); // 最後の taper 個の i 番目の重み（1 → 0 の余弦）
+
     int n = 0;
     RealFft fft;
     AlignedFloats spec, cep; // 周波数の側（並びは Fft.h の「順番どおり」）と、時間の側
+    std::vector<double> taperWindow; // taps = size / 2 のときの taperAt（prepare で作る）
 };
 
 } // namespace vcab

@@ -13,6 +13,11 @@ void MinPhaseDesigner::prepare (int size)
     fft.prepare (n);
     spec.assign (static_cast<size_t> (n));
     cep.assign (static_cast<size_t> (n));
+    // 使い方（taps = size / 2）のときの、最後の 1/4 の窓
+    const int taper = (n / 2) / 4;
+    taperWindow.resize (static_cast<size_t> (taper));
+    for (int i = 0; i < taper; ++i)
+        taperWindow[static_cast<size_t> (i)] = taperAt (i, taper);
 }
 
 void MinPhaseDesigner::design (const double* logMag, float* h, int taps)
@@ -51,14 +56,19 @@ void MinPhaseDesigner::design (const double* logMag, float* h, int taps)
     }
     fft.inverse (spec.get(), cep.get());
 
-    const int taper = taps / 4;
-    for (int i = 0; i < taps; ++i)
-    {
-        double w = 1.0;
-        if (i >= taps - taper)
-            w = 0.5 + 0.5 * std::cos (kPi * (i - (taps - taper) + 1) / (taper + 1));
-        h[i] = static_cast<float> (static_cast<double> (cep[static_cast<size_t> (i)]) * w);
-    }
+    // 最後の 1/4 をなめらかに 0 へ落とす（窓は prepare で作っておく。ほかの taps のときは、その場で計算する）
+    const int taper = taps / 4, body = taps - taper;
+    const bool useTable = taps == n / 2;
+    for (int i = 0; i < body; ++i)
+        h[i] = cep[static_cast<size_t> (i)];
+    for (int i = 0; i < taper; ++i)
+        h[body + i] = static_cast<float> (static_cast<double> (cep[static_cast<size_t> (body + i)])
+                                          * (useTable ? taperWindow[static_cast<size_t> (i)] : taperAt (i, taper)));
+}
+
+double MinPhaseDesigner::taperAt (int i, int taper)
+{
+    return 0.5 + 0.5 * std::cos (kPi * (i + 1) / (taper + 1));
 }
 
 } // namespace vcab

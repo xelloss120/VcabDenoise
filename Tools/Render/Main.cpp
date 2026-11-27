@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -41,6 +42,8 @@ void printUsage()
         "  --noise-curve          処理の最後の、ノイズ推定（表示用の値）を出す\n"
         "  --notches              1 秒ごとに、抑制している狭帯域ノイズ（周波数と深さ）を出す\n"
         "  --realtime             実際の時間の速さで処理する（声の判定の作業スレッドが間に合うかを確かめる）\n"
+        "  --reprepare            処理の前に、ほかのサンプルレートと同じサンプルレートで prepare を余分に呼ぶ\n"
+        "                         （prepare をし直しても同じ音になるか。2 回目からは、ノイズ推定の倍率を測り直さない）\n"
         "  --shadow <in> <out>    --in で分析して決めた FIR を、そのまま別の WAV にもかけて書き出す（複数可。評価用）\n"
         "                         声だけ・ノイズだけを渡すと、出力を声の分とノイズの分に分けられる\n"
         "  --list                 パラメータの一覧を表示\n"
@@ -132,6 +135,17 @@ int selfTest()
     return failures == 0 ? 0 : 1;
 }
 
+// 数として読めるか（全体が数のときだけ true。juce の getFloatValue は、読めない文字列を黙って 0 にするため）
+bool parseNumber (const juce::String& text, double& value)
+{
+    const auto str = text.trim().toStdString();
+    if (str.empty())
+        return false;
+    char* end = nullptr;
+    value = std::strtod (str.c_str(), &end);
+    return end == str.c_str() + str.size() && std::isfinite (value);
+}
+
 } // namespace
 
 int main (int argc, char* argv[])
@@ -142,7 +156,7 @@ int main (int argc, char* argv[])
     juce::String inPath, outPath, saveLearnedPath, loadLearnedPath;
     int block = 128;
     double learnFrom = -1, learnTo = -1;
-    bool printNoiseCurve = false, printNotches = false, realtime = false;
+    bool printNoiseCurve = false, printNotches = false, realtime = false, reprepare = false;
     juce::String tracePath;
     vcab::ParamValues params;
     struct Change
@@ -158,15 +172,33 @@ int main (int argc, char* argv[])
     {
         const juce::String a { juce::CharPointer_UTF8 (argv[i]) };
         auto next = [&]() -> juce::String { return i + 1 < argc ? juce::String (juce::CharPointer_UTF8 (argv[++i])) : juce::String(); };
+        // 数の引数。読めなければ止める（評価の条件が知らないうちに 0 にならないように）
+        auto number = [&] (const juce::String& text, double& value)
+        {
+            if (parseNumber (text, value))
+                return true;
+            std::cerr << "数として読めません: " << a << " " << text << "\n";
+            return false;
+        };
 
         if (a == "--in") inPath = next();
         else if (a == "--out") outPath = next();
-        else if (a == "--block") block = juce::jmax (1, next().getIntValue());
+        else if (a == "--block")
+        {
+            double v = 0;
+            if (! number (next(), v) || v < 1 || v > 1 << 20 || v != std::floor (v))
+            {
+                std::cerr << "--block は 1 以上の整数\n";
+                return 1;
+            }
+            block = static_cast<int> (v);
+        }
         else if (a == "--learn")
         {
             const auto v = next();
-            learnFrom = v.upToFirstOccurrenceOf (":", false, false).getDoubleValue();
-            learnTo = v.fromFirstOccurrenceOf (":", false, false).getDoubleValue();
+            if (! v.contains (":") || ! number (v.upToFirstOccurrenceOf (":", false, false), learnFrom)
+                || ! number (v.fromFirstOccurrenceOf (":", false, false), learnTo))
+                return 1;
         }
         else if (a == "--save-learned") saveLearnedPath = next();
         else if (a == "--load-learned") loadLearnedPath = next();
@@ -174,6 +206,7 @@ int main (int argc, char* argv[])
         else if (a == "--notches") printNotches = true;
         else if (a == "--trace") tracePath = next();
         else if (a == "--realtime") realtime = true;
+        else if (a == "--reprepare") reprepare = true;
         else if (a == "--shadow")
         {
             const auto in = next();
@@ -183,7 +216,9 @@ int main (int argc, char* argv[])
         else if (a == "--selftest") return selfTest();
         else if (a == "--set-at" || a == "--set")
         {
-            const double at = a == "--set-at" ? next().getDoubleValue() : 0.0;
+            double at = 0.0;
+            if (a == "--set-at" && ! number (next(), at))
+                return 1;
             const auto kv = next();
             const auto key = kv.upToFirstOccurrenceOf ("=", false, false).toStdString();
             const int index = vcab::findParamByKey (key);
@@ -194,8 +229,11 @@ int main (int argc, char* argv[])
             }
             // 範囲の外の値は、黙って丸めずに止める（評価の条件が知らないうちに変わらないように）
             const auto& sp = vcab::spec (static_cast<vcab::P> (index));
-            const float value = kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue();
-            if (! std::isfinite (value) || value < sp.minValue || value > sp.maxValue)
+            double parsed = 0;
+            if (! kv.contains ("=") || ! number (kv.fromFirstOccurrenceOf ("=", false, false), parsed))
+                return 1;
+            const auto value = static_cast<float> (parsed);
+            if (value < sp.minValue || value > sp.maxValue)
             {
                 std::cerr << "範囲の外の値: " << kv << "（" << sp.minValue << "〜" << sp.maxValue << "）\n";
                 return 1;
@@ -250,6 +288,11 @@ int main (int argc, char* argv[])
 
     vcab::Engine engine;
     engine.setShadowCount (static_cast<int> (shadows.size()));
+    if (reprepare)
+    {
+        engine.prepare (sr == 48000.0 ? 96000.0 : 48000.0, block);
+        engine.prepare (sr, block);
+    }
     engine.prepare (sr, block);
     engine.setRealtime (realtime);
 
