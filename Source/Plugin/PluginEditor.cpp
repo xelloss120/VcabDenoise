@@ -206,7 +206,7 @@ void VcabDenoiseEditor::resized()
 {
     auto r = getLocalBounds().reduced (kMargin, 0);
 
-    // 上の段: 名前、入力チャンネル、（右から）詳細、設定値初期化、オーディオ設定（ボタンはどれも同じ幅）
+    // 上の段: 名前、入力チャンネル、（右から）設定値初期化、詳細、オーディオ設定（ボタンはどれも同じ幅）
     headerArea = r.removeFromTop (kHeader);
     {
         auto h = headerArea.reduced (0, 5);
@@ -214,9 +214,9 @@ void VcabDenoiseEditor::resized()
         auto& input = row (P::inputChannel);
         input.label->setBounds (h.removeFromLeft (96));
         constexpr int buttonWidth = 120;
-        detailsButton.setBounds (h.removeFromRight (buttonWidth));
-        h.removeFromRight (6);
         resetButton.setBounds (h.removeFromRight (buttonWidth));
+        h.removeFromRight (6);
+        detailsButton.setBounds (h.removeFromRight (buttonWidth));
         h.removeFromRight (6);
         if (audioSettingsButton.isVisible())
         {
